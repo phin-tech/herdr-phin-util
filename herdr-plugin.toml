@@ -1,0 +1,17 @@
+id = "phin-util"
+name = "Phin Util"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Small everyday Herdr utilities: promote a pane into its own Space, and whatever else earns its keep."
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["sh", "build.sh"]
+
+# Named through the injected plugin root rather than a relative path, so the
+# action does not depend on the working directory it happens to be handed.
+[[actions]]
+id = "promote"
+title = "Promote pane to its own Space"
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/herdr-phin-util" promote']
