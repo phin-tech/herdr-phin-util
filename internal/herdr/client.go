@@ -38,15 +38,30 @@ type request struct {
 	Params any    `json:"params,omitempty"`
 }
 
-type apiError struct {
+type apiErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
 type response struct {
-	ID     string          `json:"id"`
-	Result json.RawMessage `json:"result"`
-	Error  *apiError       `json:"error"`
+	ID     string           `json:"id"`
+	Result json.RawMessage  `json:"result"`
+	Error  *apiErrorPayload `json:"error"`
+}
+
+// APIError is a structured error the server sent back, as opposed to a
+// transport failure (dial, decode, timeout). Code is exported so a caller can
+// tell one kind of rejection from another with errors.As, rather than
+// matching against formatted text -- agent.start's "the pane just spawned and
+// is not available yet" is meant to be retried; most other errors are not.
+type APIError struct {
+	Method  string
+	Code    string
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s: %s (%s)", e.Method, e.Message, e.Code)
 }
 
 func (c *Client) nextID(method string) string {
@@ -86,7 +101,7 @@ func (c *Client) Request(method string, params any, out any) error {
 		return fmt.Errorf("decode %s: %w", method, err)
 	}
 	if resp.Error != nil {
-		return fmt.Errorf("%s: %s (%s)", method, resp.Error.Message, resp.Error.Code)
+		return &APIError{Method: method, Code: resp.Error.Code, Message: resp.Error.Message}
 	}
 	if out != nil {
 		if err := json.Unmarshal(resp.Result, out); err != nil {

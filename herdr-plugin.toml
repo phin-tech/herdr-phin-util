@@ -2,7 +2,7 @@ id = "phin-util"
 name = "Phin Util"
 version = "0.1.0"
 min_herdr_version = "0.7.4"
-description = "Small everyday Herdr utilities: promote a pane into its own Space, and whatever else earns its keep."
+description = "Small everyday Herdr utilities: promote a pane into its own Space, make a workspace from a pasted link, and whatever else earns its keep."
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -15,3 +15,52 @@ id = "promote"
 title = "Promote pane to its own Space"
 contexts = ["global", "workspace", "pane"]
 command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/herdr-phin-util" promote']
+
+# Opens the popup defined below. The pane carries its own placement/size, so
+# this only needs to name it.
+[[actions]]
+id = "open-workspace-maker"
+title = "New Workspace from Link..."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "-c", 'exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin "${HERDR_PLUGIN_ID:-phin-util}" --entrypoint workspace-maker']
+
+[[actions]]
+id = "pick-project"
+title = "Open a Project..."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "-c", 'exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin "${HERDR_PLUGIN_ID:-phin-util}" --entrypoint project-picker']
+
+# Starts at the worktree level for the repo the action was fired from, rather
+# than at the project list. The pane inherits the invoking cwd, which is what
+# resolves the repository.
+[[actions]]
+id = "pick-worktree"
+title = "Open a Worktree..."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "-c", 'exec "${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin "${HERDR_PLUGIN_ID:-phin-util}" --entrypoint worktree-picker']
+
+[[panes]]
+id = "workspace-maker"
+title = "Smart Workspace Maker"
+placement = "popup"
+width = "70%"
+height = "70%"
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/herdr-phin-util" popup']
+
+# Taller than the workspace maker: this one is a list, and a list that only
+# shows four rows is barely a picker.
+[[panes]]
+id = "project-picker"
+title = "Open a Project"
+placement = "popup"
+width = "70%"
+height = "80%"
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/herdr-phin-util" pick']
+
+[[panes]]
+id = "worktree-picker"
+title = "Open a Worktree"
+placement = "popup"
+width = "70%"
+height = "80%"
+command = ["sh", "-c", 'exec "$HERDR_PLUGIN_ROOT/bin/herdr-phin-util" pick-worktree']
