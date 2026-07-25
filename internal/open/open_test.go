@@ -108,6 +108,18 @@ type fakePRLookup struct {
 	info  gh.PRInfo
 	err   error
 	calls int
+
+	issue      gh.IssueInfo
+	issueErr   error
+	issueCalls int
+}
+
+func (f *fakePRLookup) LookupIssue(owner, repo string, number int) (gh.IssueInfo, error) {
+	f.issueCalls++
+	if f.issueErr != nil {
+		return gh.IssueInfo{}, f.issueErr
+	}
+	return f.issue, nil
 }
 
 func (f *fakePRLookup) LookupPR(owner, repo string, number int) (gh.PRInfo, error) {

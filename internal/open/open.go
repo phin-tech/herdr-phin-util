@@ -12,6 +12,7 @@ package open
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -67,6 +68,51 @@ const (
 	startAgentBackoff  = 300 * time.Millisecond
 )
 
+// agent.start validates its name: it must start with a lowercase letter and
+// hold only lowercase letters, digits, '-' or '_', up to 32 characters. A
+// Space label satisfies almost none of that -- "roux#42", "ENG-123",
+// "roux/feature" and "scratch space" are all rejected -- so the label is a
+// display name and has to be converted before it can also be an agent name.
+const (
+	agentNameMaxLen = 32
+	// agentNameFallback is used when a label sanitises away to nothing, which
+	// a label made entirely of punctuation does.
+	agentNameFallback = "agent"
+)
+
+var agentNameInvalid = regexp.MustCompile(`[^a-z0-9_-]+`)
+
+// agentName turns a Space label into something agent.start will accept,
+// keeping it recognisable: "roux#42" becomes "roux-42" rather than a hash.
+func agentName(label string) string {
+	name := agentNameInvalid.ReplaceAllString(strings.ToLower(strings.TrimSpace(label)), "-")
+
+	// Collapse the runs the replacement above can produce, so "a / b" does not
+	// become "a---b".
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+	name = strings.Trim(name, "-_")
+
+	// The first character has to be a letter. A leading digit is stripped only
+	// when something is left over that still identifies the Space; otherwise a
+	// prefix keeps the name whole, since "fa-service" would be a worse answer
+	// than "agent-2fa-service" for a repo actually called 2fa-service.
+	if name == "" {
+		name = agentNameFallback
+	} else if name[0] < 'a' || name[0] > 'z' {
+		name = agentNameFallback + "-" + name
+	}
+
+	if len(name) > agentNameMaxLen {
+		name = strings.Trim(name[:agentNameMaxLen], "-_")
+	}
+	if name == "" {
+		return agentNameFallback
+	}
+	return name
+}
+
 // startAgentWithRetry backs off linearly: the pane usually settles within the
 // first interval, and the total budget stays comfortably under the time a
 // person would wait before deciding the keypress did nothing.
@@ -87,10 +133,11 @@ func startAgentWithRetry(s Session, paneID, name, kind string) error {
 	return err
 }
 
-// PRLookup resolves a pull request's branch and title. gh.Client implements
-// this against the real gh CLI.
+// PRLookup resolves a pull request's branch and title, and an issue's title.
+// gh.Client implements this against the real gh CLI.
 type PRLookup interface {
 	LookupPR(owner, repo string, number int) (gh.PRInfo, error)
+	LookupIssue(owner, repo string, number int) (gh.IssueInfo, error)
 }
 
 // Fetcher makes a remote branch available locally. gitcmd.Runner implements
@@ -104,6 +151,9 @@ type Deps struct {
 	Session Session
 	PRs     PRLookup
 	Git     Fetcher
+	// Clone fetches a repository that is not on this machine yet. Only the
+	// clone path uses it, so the rest of the package works with it nil.
+	Clone Cloner
 	// Cwd is where a Linear or plain target's Space is made. A Linear URL
 	// carries no repository the way a GitHub PR URL does, so that target is
 	// built wherever the caller already is -- the repo you're sitting in
@@ -144,8 +194,12 @@ func Run(deps Deps, cfg *config.Settings, input string, opts Options) (Outcome, 
 	switch tgt.Kind {
 	case target.KindGitHubPR:
 		return runGitHubPR(deps, cfg, tgt, opts)
+	case target.KindGitHubIssue:
+		return runGitHubIssue(deps, cfg, tgt, opts)
 	case target.KindLinear:
 		return runLinear(deps, cfg, tgt, opts)
+	case target.KindGitHubRepo:
+		return RunClone(deps, cfg, tgt, opts)
 	default:
 		return runPlain(deps, cfg, tgt, opts)
 	}
@@ -192,6 +246,49 @@ func runGitHubPR(deps Deps, cfg *config.Settings, tgt target.Target, opts Option
 		WorkspaceID: workspaceID, PaneID: pane.PaneID,
 	}
 	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, promptData(tgt, info.Branch, info.Title), out)
+}
+
+// runGitHubIssue sits between the other two: an issue URL names its own
+// repository the way a pull request does, but names no branch, so one is
+// derived the way a Linear issue's is.
+//
+// The title is a nicety, not a requirement -- a gh failure downgrades the
+// branch from "99-fix-the-thing" to "issue-99" rather than failing the whole
+// action, since the Space is still exactly the one that was asked for.
+func runGitHubIssue(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) (Outcome, error) {
+	repoPath, _, err := cfg.ResolveRepo(tgt)
+	if err != nil {
+		return Outcome{}, err
+	}
+
+	var title string
+	if info, err := deps.PRs.LookupIssue(tgt.Owner, tgt.Repo, tgt.Number); err == nil {
+		title = info.Title
+		tgt.Slug = info.Title
+	}
+
+	branch := tgt.Branch()
+	path, _ := cfg.ResolveWorktreePath(tgt, repoPath, branch)
+	req := herdr.WorktreeRequest{
+		Cwd:    repoPath,
+		Branch: branch,
+		// No base: the work has not started, so it begins wherever the source
+		// checkout already is.
+		Path:  path,
+		Label: tgt.Label(),
+		Focus: true,
+	}
+
+	pane, workspaceID, err := createOrOpenWorktree(deps.Session, req)
+	if err != nil {
+		return Outcome{}, err
+	}
+
+	out := Outcome{
+		Kind: tgt.Kind, Label: tgt.Label(), Branch: branch, RepoPath: repoPath,
+		WorkspaceID: workspaceID, PaneID: pane.PaneID,
+	}
+	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, promptData(tgt, branch, title), out)
 }
 
 func runLinear(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) (Outcome, error) {
@@ -263,7 +360,7 @@ func runAgentStep(s Session, cfg *config.Settings, tgt target.Target, opts Optio
 		return out, nil
 	}
 
-	if err := startAgentWithRetry(s, paneID, tgt.Label(), cfg.Agent.Kind); err != nil {
+	if err := startAgentWithRetry(s, paneID, agentName(tgt.Label()), cfg.Agent.Kind); err != nil {
 		return out, fmt.Errorf("start agent: %w", err)
 	}
 	// Typing into a pane that is still on a startup banner would land in the

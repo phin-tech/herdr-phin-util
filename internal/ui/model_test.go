@@ -66,6 +66,10 @@ func (f *fakeSession) SendText(paneID, text string) error {
 
 func (f *fakeSession) FetchBranch(repoPath, branch string) error { return nil }
 
+func (f *fakeSession) LookupIssue(owner, repo string, number int) (gh.IssueInfo, error) {
+	return gh.IssueInfo{}, nil
+}
+
 func (f *fakeSession) LookupPR(owner, repo string, number int) (gh.PRInfo, error) {
 	return gh.PRInfo{}, errors.New("not used in these tests")
 }

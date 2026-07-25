@@ -67,3 +67,46 @@ func (c *Client) LookupPR(owner, repo string, number int) (PRInfo, error) {
 	}
 	return PRInfo{Branch: raw.HeadRefName, Title: raw.Title}, nil
 }
+
+// IssueInfo is what LookupIssue reports about an issue.
+//
+// There is no branch here, unlike a pull request: an issue names work that has
+// not started, so the branch is derived from the title rather than read off
+// the remote.
+type IssueInfo struct {
+	Title string
+}
+
+// LookupIssue fetches an issue's title, which is what turns a branch called
+// "issue-99" into one called "99-fix-the-flaky-test".
+func (c *Client) LookupIssue(owner, repo string, number int) (IssueInfo, error) {
+	out, err := c.run("", "gh", "issue", "view", strconv.Itoa(number),
+		"--repo", owner+"/"+repo,
+		"--json", "title")
+	if err != nil {
+		return IssueInfo{}, fmt.Errorf("gh issue view %s/%s#%d: %w", owner, repo, number, err)
+	}
+
+	var raw struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return IssueInfo{}, fmt.Errorf("decode gh issue view output for %s/%s#%d: %w", owner, repo, number, err)
+	}
+	return IssueInfo{Title: raw.Title}, nil
+}
+
+// Clone fetches a repository to dest.
+//
+// This shells out to gh rather than git so that a private repository works
+// with no extra configuration: gh already holds the user's credentials, which
+// is the same reason the lookups above go through it.
+func (c *Client) Clone(owner, repo, dest string) error {
+	if dest == "" {
+		return fmt.Errorf("no destination to clone %s/%s into", owner, repo)
+	}
+	if _, err := c.run("", "gh", "repo", "clone", owner+"/"+repo, dest); err != nil {
+		return fmt.Errorf("gh repo clone %s/%s: %w", owner, repo, err)
+	}
+	return nil
+}

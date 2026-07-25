@@ -23,6 +23,7 @@ import (
 	"github.com/phin-tech/herdr-phin-util/internal/discovery"
 	"github.com/phin-tech/herdr-phin-util/internal/herdr"
 	"github.com/phin-tech/herdr-phin-util/internal/open"
+	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
 
 // Kind distinguishes the two things a row can be.
@@ -49,6 +50,9 @@ type Candidate struct {
 	// Branch is set at the worktree level: the branch the row would check out,
 	// or already has.
 	Branch string
+	// Target is set on a KindLink row: the parsed reference the row came from,
+	// carried through so acting on it needs no second parse.
+	Target target.Target
 	// Focused marks the Space the user is looking at right now.
 	Focused bool
 	// Detail is the dimmed secondary text -- the path, or a shape summary for
@@ -213,6 +217,12 @@ func Open(deps Deps, focuser Focuser, cfg *config.Settings, c Candidate, opts op
 
 	case KindProject:
 		return open.RunProject(deps.Open, cfg, c.Path, opts)
+
+	case KindLink:
+		return OpenLink(deps, cfg, c, opts)
+
+	case KindClone:
+		return OpenClone(deps, cfg, c, opts)
 
 	default:
 		return open.Outcome{}, fmt.Errorf("unknown candidate kind %q", c.Kind)

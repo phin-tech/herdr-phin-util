@@ -3,12 +3,15 @@ package ui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
+	"github.com/phin-tech/herdr-phin-util/internal/herdr"
 	"github.com/phin-tech/herdr-phin-util/internal/open"
 	"github.com/phin-tech/herdr-phin-util/internal/session"
+	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
 
 // level is which list the picker is showing.
@@ -47,8 +50,16 @@ type Picker struct {
 	projectFilter string
 	projectCursor int
 
+	// workspaces is kept so a pasted link can be matched against the open
+	// Spaces by label without another round trip.
+	workspaces []herdr.Workspace
+
 	all      []session.Candidate
 	filtered []session.Candidate
+	// linkMode records that the current rows came from resolving a pasted
+	// reference rather than filtering the list, which the count summary has to
+	// know: "1 of 21" would imply the other 20 were considered and rejected.
+	linkMode bool
 
 	filter textinput.Model
 	cursor int
@@ -57,6 +68,14 @@ type Picker struct {
 	offset int
 
 	agentOn bool
+
+	// promptArea is the maker's "read it before it is sent" affordance,
+	// reachable with ctrl+e. It is hidden by default: most picks switch to a
+	// Space and never start an agent, so a textarea on screen would be dead
+	// weight for the common case.
+	promptArea   textarea.Model
+	editing      bool
+	promptEdited bool
 
 	width, height int
 
@@ -84,7 +103,13 @@ func NewPicker(cfg *config.Settings, deps session.Deps, focuser session.Focuser,
 	filter.Prompt = "> "
 	filter.Focus()
 
+	prompt := textarea.New()
+	prompt.Placeholder = "prompt typed into the agent (not submitted for you)"
+	prompt.ShowLineNumbers = false
+	prompt.SetHeight(6)
+
 	p := &Picker{
+		promptArea: prompt,
 		cfg:        cfg,
 		deps:       deps,
 		focuser:    focuser,
@@ -97,6 +122,14 @@ func NewPicker(cfg *config.Settings, deps session.Deps, focuser session.Focuser,
 		height:     24,
 	}
 	p.applyFilter()
+	return p
+}
+
+// WithWorkspaces supplies the open Spaces a pasted link is matched against.
+// Without it the picker still works; a link simply always reads as "create",
+// which is what it did before this existed.
+func (p *Picker) WithWorkspaces(workspaces []herdr.Workspace) *Picker {
+	p.workspaces = workspaces
 	return p
 }
 
@@ -118,17 +151,22 @@ func NewWorktreePicker(cfg *config.Settings, deps session.Deps, focuser session.
 // filterPlaceholder names what the current level is a list of.
 func filterPlaceholder(l level) string {
 	if l == levelWorktrees {
-		return "filter branches and worktrees"
+		return "filter branches, or type a new branch name"
 	}
-	return "filter spaces and projects"
+	return "filter, or paste a PR / issue / Linear link"
 }
 
 // canDescend reports whether a row has a repository behind it to look into.
 func canDescend(c session.Candidate) bool {
-	if c.Path == "" {
+	switch c.Kind {
+	case session.KindClone:
+		// Nothing on disk yet, but the reference is enough to go and get it.
+		return c.Target.Owner != "" && c.Target.Repo != ""
+	case session.KindProject, session.KindSpace:
+		return c.Path != ""
+	default:
 		return false
 	}
-	return c.Kind == session.KindProject || c.Kind == session.KindSpace
 }
 
 type descendMsg struct {
@@ -147,8 +185,19 @@ func (p *Picker) descend(c session.Candidate) tea.Cmd {
 
 	p.running = true
 	p.err = nil
-	p.status = "reading " + c.Label + "..."
 
+	// A repository that is not here yet has to be fetched before it has any
+	// branches to show. It is the same descent, with one slow step in front.
+	if c.Kind == session.KindClone {
+		p.status = "cloning " + c.Label + "..."
+		deps, cfg, tgt := p.deps, p.cfg, c.Target
+		return func() tea.Msg {
+			candidates, repo, err := session.CloneAndList(deps, cfg, tgt)
+			return descendMsg{repo: repo, candidates: candidates, err: err}
+		}
+	}
+
+	p.status = "reading " + c.Label + "..."
 	lister, git, path := p.deps.Worktrees, p.deps.Git, c.Path
 	return func() tea.Msg {
 		candidates, repo, err := session.ListWorktrees(lister, git, path)
@@ -315,10 +364,38 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 
+	// While the prompt box is open it owns the keyboard, apart from the two
+	// keys that close it again.
+	if p.editing {
+		switch msg.String() {
+		case "ctrl+c":
+			p.quitting = true
+			return p, tea.Quit
+		case "esc", "ctrl+e":
+			p.editing = false
+			p.promptArea.Blur()
+			return p, nil
+		case "ctrl+s", "enter":
+			if msg.String() == "ctrl+s" {
+				return p, p.submit()
+			}
+		}
+		before := p.promptArea.Value()
+		var cmd tea.Cmd
+		p.promptArea, cmd = p.promptArea.Update(msg)
+		if p.promptArea.Value() != before {
+			p.promptEdited = true
+		}
+		return p, cmd
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		p.quitting = true
 		return p, tea.Quit
+
+	case "ctrl+e":
+		return p, p.toggleEditor()
 
 	case "esc":
 		// Inside a repository, esc is "back" rather than "quit". Backing out
@@ -335,7 +412,10 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return p, p.submit()
 
-	case "right", "ctrl+w":
+	// tab descends, shift+tab comes back. Deliberately not the arrow keys:
+	// the input box holds pasted URLs now, and text you cannot move a cursor
+	// through is text you cannot correct.
+	case "tab", "ctrl+w":
 		if p.level == levelProjects {
 			if c, ok := p.selected(); ok && canDescend(c) {
 				return p, p.descend(c)
@@ -343,7 +423,7 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 
-	case "left":
+	case "shift+tab":
 		if p.level == levelWorktrees && p.rootLevel != levelWorktrees {
 			p.ascend()
 		}
@@ -391,27 +471,62 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // but the order here is meaningful -- open Spaces before checkouts -- and
 // having rows jump between positions as you type costs more than ranking
 // gains.
+// applyFilter decides what the rows are, from what has been typed.
+//
+// This is the whole idea behind one input: the query's *shape* selects the
+// result set, rather than a mode being chosen up front. A reference resolves
+// to the single thing it names; anything else filters the list.
 func (p *Picker) applyFilter() {
 	query := strings.TrimSpace(p.filter.Value())
+
+	// A pasted reference is not a filter that happens to match nothing -- it
+	// is a query with exactly one answer, so it replaces the list outright.
+	if c, ok := session.ResolveLink(p.workspaces, p.cfg, p.parseQuery(query)); ok {
+		p.filtered = []session.Candidate{c}
+		p.linkMode = true
+		p.cursor, p.offset = 0, 0
+		return
+	}
+	p.linkMode = false
+
 	if query == "" {
 		p.filtered = p.all
-	} else {
-		out := make([]session.Candidate, 0, len(p.all)+1)
-		for _, c := range p.all {
-			if matches(query, c) {
-				out = append(out, c)
-			}
-		}
-		// Inside a repository, text that names no existing branch becomes an
-		// offer to create it. That is how a new branch gets made without a
-		// separate mode to enter -- you are already typing its name.
-		if p.level == levelWorktrees && !hasExactBranch(p.all, query) {
-			out = append(out, session.NewBranchCandidate(p.repo, query))
-		}
-		p.filtered = out
+		p.cursor, p.offset = 0, 0
+		return
 	}
+
+	out := make([]session.Candidate, 0, len(p.all)+1)
+	for _, c := range p.all {
+		if matches(query, c) {
+			out = append(out, c)
+		}
+	}
+	// Inside a repository, text that names no existing branch becomes an
+	// offer to create it. That is how a new branch gets made without a
+	// separate mode to enter -- you are already typing its name.
+	if p.level == levelWorktrees && !hasExactBranch(p.all, query) {
+		out = append(out, session.NewBranchCandidate(p.repo, query))
+	}
+	p.filtered = out
 	p.cursor = 0
 	p.offset = 0
+}
+
+// parseQuery classifies what has been typed.
+//
+// "owner/repo" shorthand is only recognised at the project level. One level
+// down that shape is overwhelmingly a branch name -- "codex/iterm-split" --
+// and nothing but context tells the two apart.
+func (p *Picker) parseQuery(query string) target.Target {
+	if tgt := target.Parse(query); tgt.Kind != target.KindPlain {
+		return tgt
+	}
+	if p.level == levelProjects {
+		if tgt, ok := target.ParseRepoShorthand(query); ok {
+			return tgt
+		}
+	}
+	return target.Parse(query)
 }
 
 // hasExactBranch reports whether the query already names a row exactly, in
@@ -522,6 +637,11 @@ func (p *Picker) submit() tea.Cmd {
 
 	agent := p.agentOn
 	opts := open.Options{Agent: &agent}
+	if p.promptEdited {
+		// Edited text wins outright over the template, the same rule the
+		// workspace maker follows.
+		opts.Prompt = p.promptArea.Value()
+	}
 	deps := p.deps
 	focuser := p.focuser
 	cfg := p.cfg
@@ -540,6 +660,48 @@ func (p *Picker) submit() tea.Cmd {
 		out, err := session.Open(deps, focuser, cfg, candidate, opts)
 		return pickResultMsg{out: out, err: err}
 	}
+}
+
+// toggleEditor opens the prompt box for the highlighted row, pre-filled with
+// what the template would produce.
+//
+// It is only offered where it means something: switching to a Space starts no
+// agent, so there would be no prompt to edit.
+func (p *Picker) toggleEditor() tea.Cmd {
+	c, ok := p.selected()
+	if !ok || !startsAnAgent(c) {
+		return nil
+	}
+
+	if !p.promptEdited {
+		if preview, err := open.PreviewPrompt(p.cfg, promptTargetFor(c)); err == nil {
+			p.promptArea.SetValue(preview)
+		}
+	}
+	p.editing = true
+	p.promptArea.Focus()
+	return textarea.Blink
+}
+
+// startsAnAgent reports whether picking a row would run the agent step, which
+// is the only case where a prompt exists to edit.
+func startsAnAgent(c session.Candidate) bool {
+	switch c.Kind {
+	case session.KindSpace, session.KindPrunable:
+		return false
+	default:
+		return true
+	}
+}
+
+// promptTargetFor is what the prompt template renders against. A link row
+// carries its own parsed target; everything else is a checkout, which uses the
+// project template.
+func promptTargetFor(c session.Candidate) target.Target {
+	if c.Kind == session.KindLink {
+		return c.Target
+	}
+	return target.Target{Kind: target.KindProject, Text: c.Label}
 }
 
 func statusFor(c session.Candidate) string {

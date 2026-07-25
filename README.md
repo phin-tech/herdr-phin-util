@@ -69,11 +69,16 @@ so a test cannot hold focus on a background Space to exercise itself.
 
 ## New Space from a pasted link
 
+> The project picker below now takes links in its own box, and adds
+> "switch to it if a Space already exists". This popup is still here because
+> it puts the prompt front and centre rather than behind `ctrl+e`.
+
 Paste a link, get the Space it describes. What that means depends on the link:
 
 | Pasted | What happens |
 | --- | --- |
 | GitHub PR URL | Finds the checkout locally, asks `gh` for the PR's branch, fetches it, and opens a worktree Space on it |
+| GitHub issue URL | Finds the checkout, asks `gh` for the title, and opens a worktree Space on a branch derived from it |
 | Linear issue URL | Derives a branch from the issue key and slug, and opens a worktree Space for it |
 | Anything else | A plain Space named after the text |
 
@@ -92,6 +97,7 @@ issue belongs to, same as you would for `git checkout`.
 
 ```sh
 bin/herdr-phin-util open https://github.com/o/r/pull/42
+bin/herdr-phin-util open https://github.com/o/r/issues/99
 bin/herdr-phin-util open https://linear.app/team/issue/ENG-123/fix-the-thing
 bin/herdr-phin-util open "scratch space"
 bin/herdr-phin-util open <link> --no-agent          # skip the agent step
@@ -125,6 +131,7 @@ kind = "claude"     # any agent kind Herdr knows
 [agent.prompts]     # Go text/template
 # Fields: URL Host Owner Repo Number Title Issue Slug Branch Text
 github_pr = "Review PR #{{.Number}} — {{.Title}}\n{{.URL}}"
+github_issue = "Work issue #{{.Number}} — {{.Title}}\n{{.URL}}"
 linear    = "Work {{.Issue}} — {{.Title}}\n{{.URL}}"
 plain     = "{{.Text}}"
 # Empty by default: opening a checkout is not a task, so the agent starts on a
@@ -195,8 +202,90 @@ what is open before it asks the disk what exists.
 Filtering is a subsequence match over the name and the path, so `hpu` finds
 `herdr-phin-util` and `acme` finds everything under that owner.
 
-`tab` is not used: the filter box owns every printable key, so the agent
-toggle is `ctrl+a`.
+The agent toggle is `ctrl+a`, not `space` — the box owns every printable key.
+
+### Paste a link into it
+
+The same box takes a reference. What you type selects the result set, rather
+than a mode being chosen before you know what you are about to type:
+
+```
+> https://github.com/phin-tech/roux/pull/42
+already open
+▸ open    roux#42     already open — switch to it
+```
+```
+> https://github.com/phin-tech/roux/pull/7
+one result
+▸ link    roux#7      pull request in phin-tech/roux — worktree on its branch
+```
+
+A reference is not a filter that matched nothing — it is a query with exactly
+one answer, so it replaces the list. And it obeys the same rule as everything
+else here: **if a Space already exists for it, you are offered the Space.**
+
+That answer is free. A link's Space label is derived from the URL alone —
+`roux#42`, `ENG-123` — so matching it against the open Spaces needs no `gh`,
+no branch resolution, no network. It is a heuristic: rename a Space and it
+misses, and you fall back to what happened before, which is that `worktree.open`
+quietly focuses the existing one anyway.
+
+GitHub issues are recognised alongside pull requests. An issue names no
+existing branch, so it behaves like a Linear issue — a branch is derived
+(`99-fix-the-flaky-test`, or `issue-99` if `gh` cannot supply the title).
+
+### Clone something you do not have yet
+
+A repository reference — a clone URL, an SSH remote, or `owner/repo` typed by
+hand — resolves the same three ways as everything else:
+
+```
+> charmbracelet/lipgloss
+▸ clone   lipgloss    clone to ~/src/github.com/charmbracelet/lipgloss
+
+> phin-tech/roux
+▸ new     roux        already cloned — ~/src/github.com/phin-tech/roux
+
+> phin-tech/roux                      (when a Space is open on it)
+▸ open    roux        already open — switch to it
+```
+
+The destination is the **first** `[repos].templates` entry, which is the same
+list `ResolveRepo` searches. That symmetry is the point: a repo cloned here is
+one the paste-a-link flow can find afterwards. Cloning somewhere the templates
+do not cover would leave a checkout the rest of the plugin cannot see.
+
+It clones with `gh`, not `git`, so a private repository needs no extra
+configuration — `gh` already holds your credentials, the same reason the PR and
+issue lookups go through it.
+
+`tab` works on a `clone` row too, and means "fetch it, then show me its
+branches" — so going from a repo you have never had to a branch on it is one
+pass:
+
+```
+> charmbracelet/lipgloss
+▸ clone   lipgloss      clone to ~/src/github.com/charmbracelet/lipgloss
+
+  tab  →  cloning lipgloss...
+
+Open a project › lipgloss
+> my-new-thing
+▸ create  my-new-thing  new branch from main
+```
+
+This is the one place `tab` is not instant — everywhere else it is a local
+read. The hint says `clone & branch` rather than `worktrees` on that row, so
+the difference is visible before you press it.
+
+The `owner/repo` shorthand is only recognised at the project level. One level
+down that shape is overwhelmingly a branch name (`codex/iterm-split`), and
+nothing but context tells the two apart.
+
+`ctrl+e` opens the prompt box, pre-filled from the template, for any row that
+would start an agent. Edit it and your text wins outright. It is hidden by
+default because most picks switch to a Space and never start an agent, so a
+textarea on screen would be dead weight.
 
 ### Where it looks
 

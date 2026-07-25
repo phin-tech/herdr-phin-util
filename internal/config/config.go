@@ -49,10 +49,11 @@ var validAgentKinds = map[string]bool{
 // or an issue is, so there is nothing to say yet -- the agent starts with a
 // clean input rather than a canned line to delete.
 var defaultPrompts = PromptSettings{
-	GithubPR: "Review PR #{{.Number}} — {{.Title}}\n{{.URL}}",
-	Linear:   "Work {{.Issue}} — {{.Title}}\n{{.URL}}",
-	Plain:    "{{.Text}}",
-	Project:  "",
+	GithubPR:    "Review PR #{{.Number}} — {{.Title}}\n{{.URL}}",
+	GithubIssue: "Work issue #{{.Number}} — {{.Title}}\n{{.URL}}",
+	Linear:      "Work {{.Issue}} — {{.Title}}\n{{.URL}}",
+	Plain:       "{{.Text}}",
+	Project:     "",
 }
 
 // Project discovery defaults. GitOnly is on because a folder of checkouts
@@ -80,10 +81,11 @@ type AgentSettings struct {
 
 // PromptSettings holds one Go text/template body per target kind.
 type PromptSettings struct {
-	GithubPR string
-	Linear   string
-	Plain    string
-	Project  string
+	GithubPR    string
+	GithubIssue string
+	Linear      string
+	Plain       string
+	Project     string
 }
 
 // For returns the template text for a target kind, falling back to the plain
@@ -92,6 +94,8 @@ func (p PromptSettings) For(k target.Kind) string {
 	switch k {
 	case target.KindGitHubPR:
 		return p.GithubPR
+	case target.KindGitHubIssue:
+		return p.GithubIssue
 	case target.KindLinear:
 		return p.Linear
 	case target.KindProject:
@@ -151,10 +155,11 @@ type rawConfig struct {
 		Enabled *bool  `toml:"enabled"`
 		Kind    string `toml:"kind"`
 		Prompts struct {
-			GithubPR string `toml:"github_pr"`
-			Linear   string `toml:"linear"`
-			Plain    string `toml:"plain"`
-			Project  string `toml:"project"`
+			GithubPR    string `toml:"github_pr"`
+			GithubIssue string `toml:"github_issue"`
+			Linear      string `toml:"linear"`
+			Plain       string `toml:"plain"`
+			Project     string `toml:"project"`
 		} `toml:"prompts"`
 	} `toml:"agent"`
 	Projects struct {
@@ -241,6 +246,9 @@ func LoadFrom(dir string) (*Settings, error) {
 	}
 	if raw.Agent.Prompts.GithubPR != "" {
 		s.Prompts.GithubPR = raw.Agent.Prompts.GithubPR
+	}
+	if raw.Agent.Prompts.GithubIssue != "" {
+		s.Prompts.GithubIssue = raw.Agent.Prompts.GithubIssue
 	}
 	if raw.Agent.Prompts.Linear != "" {
 		s.Prompts.Linear = raw.Agent.Prompts.Linear
@@ -363,6 +371,23 @@ func (s *Settings) ResolveRepo(t target.Target) (string, []string, error) {
 		}
 	}
 	return "", tried, fmt.Errorf("no repo template matched %s/%s (tried %v)", t.Owner, t.Repo, tried)
+}
+
+// ClonePath is where a repository that is not on this machine yet should be
+// cloned to: the first configured template, expanded.
+//
+// Unlike ResolveRepo this does not care whether the path exists -- that is the
+// whole point, since nothing is there yet. The first template wins because a
+// list of templates is a list of places to *look*, and the one you would look
+// in first is the one you would put a new checkout in.
+func (s *Settings) ClonePath(t target.Target) (string, error) {
+	if t.Owner == "" || t.Repo == "" {
+		return "", fmt.Errorf("target %q has no repository to clone", t.Text)
+	}
+	if len(s.RepoTemplates) == 0 {
+		return "", fmt.Errorf("no repos.templates configured to clone into")
+	}
+	return expandTemplate(s.RepoTemplates[0], t, nil), nil
 }
 
 // ResolveWorktreePath expands the configured worktree path template, if any.

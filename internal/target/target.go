@@ -19,6 +19,15 @@ type Kind string
 const (
 	// KindGitHubPR is a pull request URL.
 	KindGitHubPR Kind = "github_pr"
+	// KindGitHubIssue is an issue URL. Unlike a pull request it names no
+	// existing branch -- there is nothing to check out yet, so it behaves like
+	// a Linear issue: derive a branch and create it.
+	KindGitHubIssue Kind = "github_issue"
+	// KindGitHubRepo is a repository reference with no issue or pull request
+	// attached: a clone URL, or "owner/repo" shorthand. It names a checkout
+	// rather than a unit of work, so what happens next depends entirely on
+	// whether that checkout exists on this machine yet.
+	KindGitHubRepo Kind = "github_repo"
 	// KindLinear is a Linear issue URL.
 	KindLinear Kind = "linear"
 	// KindPlain is anything else: a name for a Space, not a reference.
@@ -56,6 +65,24 @@ type Target struct {
 // anything after it (/files, #discussion) ignored.
 var prPath = regexp.MustCompile(`^/([^/]+)/([^/]+)/pull/(\d+)`)
 
+// issuePath is the same shape for issues. GitHub numbers issues and pull
+// requests from one sequence per repository, so "repo#7" identifies exactly
+// one of them and the two kinds can never collide on a label.
+var issuePath = regexp.MustCompile(`^/([^/]+)/([^/]+)/issues/(\d+)`)
+
+// repoPath matches a bare repository URL: /owner/repo, with an optional .git
+// suffix and trailing slash. Exactly two segments, so it cannot swallow the
+// /pull/ and /issues/ forms above.
+var repoPath = regexp.MustCompile(`^/([^/]+)/([^/]+?)(?:\.git)?/?$`)
+
+// sshRepo matches the scp-style remote git prints for a private clone.
+var sshRepo = regexp.MustCompile(`^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?/?$`)
+
+// shorthandRepo matches "owner/repo" typed by hand. It is deliberately strict
+// about the character set: a branch name like "codex/iterm-split" would
+// otherwise read as a repository, and the two are told apart by nothing else.
+var shorthandRepo = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)$`)
+
 // linearPath matches /<org>/issue/<KEY>/<slug>, where the slug is optional
 // because Linear's "copy link" sometimes omits it.
 var linearPath = regexp.MustCompile(`^/[^/]+/issue/([A-Za-z][A-Za-z0-9]*-\d+)(?:/([^/?#]*))?`)
@@ -72,6 +99,10 @@ func Parse(input string) Target {
 		return t
 	}
 
+	if m := sshRepo.FindStringSubmatch(text); m != nil {
+		return repoTarget(text, m[1], m[2])
+	}
+
 	u, err := url.Parse(text)
 	if err != nil || u.Host == "" {
 		return t
@@ -81,21 +112,35 @@ func Parse(input string) Target {
 
 	switch {
 	case host == "github.com":
-		m := prPath.FindStringSubmatch(u.Path)
-		if m == nil {
-			return t
+		if m := prPath.FindStringSubmatch(u.Path); m != nil {
+			// The regexp already constrained this to digits.
+			number, _ := strconv.Atoi(m[3])
+			return Target{
+				Kind:   KindGitHubPR,
+				URL:    text,
+				Text:   text,
+				Host:   "github.com",
+				Owner:  m[1],
+				Repo:   m[2],
+				Number: number,
+			}
 		}
-		// The regexp already constrained this to digits.
-		number, _ := strconv.Atoi(m[3])
-		return Target{
-			Kind:   KindGitHubPR,
-			URL:    text,
-			Text:   text,
-			Host:   "github.com",
-			Owner:  m[1],
-			Repo:   m[2],
-			Number: number,
+		if m := issuePath.FindStringSubmatch(u.Path); m != nil {
+			number, _ := strconv.Atoi(m[3])
+			return Target{
+				Kind:   KindGitHubIssue,
+				URL:    text,
+				Text:   text,
+				Host:   "github.com",
+				Owner:  m[1],
+				Repo:   m[2],
+				Number: number,
+			}
 		}
+		if m := repoPath.FindStringSubmatch(u.Path); m != nil {
+			return repoTarget(text, m[1], m[2])
+		}
+		return t
 
 	case host == "linear.app":
 		m := linearPath.FindStringSubmatch(u.Path)
@@ -113,6 +158,44 @@ func Parse(input string) Target {
 	return t
 }
 
+// ParseRepoShorthand recognises "owner/repo" typed without a URL around it.
+//
+// It is separate from Parse on purpose. A bare string with a slash in it is a
+// perfectly good Space name, and at the worktree level it is far more likely
+// to be a branch, so only a caller that knows it is looking at a repository
+// list should ask this question.
+func ParseRepoShorthand(input string) (Target, bool) {
+	text := strings.TrimSpace(input)
+	m := shorthandRepo.FindStringSubmatch(text)
+	if m == nil {
+		return Target{}, false
+	}
+	return repoTarget(text, m[1], m[2]), true
+}
+
+func repoTarget(text, owner, repo string) Target {
+	return Target{
+		Kind:  KindGitHubRepo,
+		URL:   text,
+		Text:  text,
+		Host:  "github.com",
+		Owner: owner,
+		Repo:  repo,
+	}
+}
+
+// CloneURL is the address to clone a repository target from.
+func (t Target) CloneURL() string {
+	if t.Owner == "" || t.Repo == "" {
+		return ""
+	}
+	host := t.Host
+	if host == "" {
+		host = "github.com"
+	}
+	return fmt.Sprintf("https://%s/%s/%s.git", host, t.Owner, t.Repo)
+}
+
 // Branch is the branch name to create for a target.
 //
 // Only Linear gets a generated branch: a pull request already has one, and it
@@ -125,6 +208,14 @@ func (t Target) Branch() string {
 			return key
 		}
 		return key + "-" + Sanitize(t.Slug)
+	case KindGitHubIssue:
+		// An issue URL carries no title the way a Linear one does, so this is
+		// the most a URL alone can say. Slug is filled in by whoever asks gh
+		// for the title, and is preferred when it is there.
+		if t.Slug != "" {
+			return fmt.Sprintf("%d-%s", t.Number, Sanitize(t.Slug))
+		}
+		return fmt.Sprintf("issue-%d", t.Number)
 	default:
 		return ""
 	}
@@ -133,10 +224,12 @@ func (t Target) Branch() string {
 // Label is the Space name for a target.
 func (t Target) Label() string {
 	switch t.Kind {
-	case KindGitHubPR:
+	case KindGitHubPR, KindGitHubIssue:
 		return fmt.Sprintf("%s#%d", t.Repo, t.Number)
 	case KindLinear:
 		return t.Issue
+	case KindGitHubRepo:
+		return t.Repo
 	default:
 		return t.Text
 	}

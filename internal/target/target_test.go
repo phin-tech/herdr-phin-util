@@ -22,12 +22,26 @@ func TestParseGitHubPR(t *testing.T) {
 	}
 }
 
-// An issue URL is not a pull request; treating it as one would send us looking
-// for a branch that does not exist.
-func TestParseGitHubNonPRIsPlain(t *testing.T) {
+// An issue URL is not a pull request. It gets its own kind rather than being
+// treated as one, because there is no existing branch to check out -- the
+// branch has to be created, the way a Linear issue's is.
+func TestParseGitHubIssueIsNotAPullRequest(t *testing.T) {
+	got := Parse("https://github.com/phin-tech/herdr-phin-util/issues/42")
+	if got.Kind != KindGitHubIssue {
+		t.Fatalf("Kind = %q, want %q", got.Kind, KindGitHubIssue)
+	}
+	if got.Owner != "phin-tech" || got.Repo != "herdr-phin-util" || got.Number != 42 {
+		t.Errorf("owner %q repo %q number %d", got.Owner, got.Repo, got.Number)
+	}
+}
+
+// A github.com URL that is neither a repository root nor a unit of work is
+// just text. Two path segments is a repository; anything else is not.
+func TestParseGitHubOtherIsPlain(t *testing.T) {
 	for _, in := range []string{
-		"https://github.com/phin-tech/herdr-phin-util/issues/42",
-		"https://github.com/phin-tech/herdr-phin-util",
+		"https://github.com/phin-tech/herdr-phin-util/commits/main",
+		"https://github.com/phin-tech",
+		"https://github.com/",
 	} {
 		if got := Parse(in); got.Kind != KindPlain {
 			t.Errorf("Parse(%q).Kind = %q, want plain", in, got.Kind)

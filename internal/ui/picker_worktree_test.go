@@ -74,7 +74,7 @@ func TestPickerDescendsIntoARepo(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, project("acme", "/src/acme"))
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	if p.level != levelWorktrees {
 		t.Fatal("expected the picker to descend")
@@ -96,7 +96,7 @@ func TestPickerDescendsFromASpace(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, space("acme", "/src/acme"))
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	if p.level != levelWorktrees {
 		t.Fatal("expected a Space row to descend")
@@ -107,7 +107,7 @@ func TestPickerCannotDescendWithoutAPath(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, session.Candidate{Kind: session.KindSpace, Label: "scratch"})
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	if p.level != levelProjects {
 		t.Error("a Space with no directory has no repo to descend into")
@@ -129,7 +129,7 @@ func TestPickerAscendRestoresTheProjectLevel(t *testing.T) {
 		t.Fatalf("got %v, want just acme before descending", labels(p.filtered))
 	}
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 	if p.level != levelWorktrees {
 		t.Fatal("expected to descend")
 	}
@@ -154,15 +154,15 @@ func TestPickerAscendRestoresTheProjectLevel(t *testing.T) {
 	}
 }
 
-func TestPickerLeftArrowAscends(t *testing.T) {
+func TestPickerShiftTabAscends(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, project("acme", "/src/acme"))
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
-	press(p, tea.KeyMsg{Type: tea.KeyLeft})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
+	press(p, tea.KeyMsg{Type: tea.KeyShiftTab})
 
 	if p.level != levelProjects {
-		t.Error("left should go back a level")
+		t.Error("shift+tab should go back a level")
 	}
 }
 
@@ -171,7 +171,7 @@ func TestPickerFailedDescentStaysPut(t *testing.T) {
 	wt := &stubWorktrees{err: errors.New("not a git repository")}
 	p := navPicker(t, wt, &stubBrancher{}, project("acme", "/src/acme"))
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	if p.level != levelProjects {
 		t.Error("a failed descent should not change level")
@@ -188,7 +188,7 @@ func TestPickerFailedDescentStaysPut(t *testing.T) {
 func TestPickerOffersToCreateANewBranch(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, project("acme", "/src/acme"))
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	typeInto(p, "brand-new")
 
@@ -208,7 +208,7 @@ func TestPickerOffersToCreateANewBranch(t *testing.T) {
 func TestPickerDoesNotOfferToCreateAnExistingBranch(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, project("acme", "/src/acme"))
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	typeInto(p, "feature")
 
@@ -236,7 +236,7 @@ func TestPickerNoCreateRowAtTheProjectLevel(t *testing.T) {
 func TestPickerRefreshFetchesAndReloads(t *testing.T) {
 	wt, git := defaultWorktrees()
 	p := navPicker(t, wt, git, project("acme", "/src/acme"))
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	press(p, tea.KeyMsg{Type: tea.KeyCtrlR})
 
@@ -297,7 +297,7 @@ func TestWorktreePickerHintSaysCancelNotBack(t *testing.T) {
 func TestPickerDescendWithoutDepsIsInert(t *testing.T) {
 	p := testPicker(t, project("acme", "/src/acme"))
 
-	press(p, tea.KeyMsg{Type: tea.KeyRight})
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
 
 	if p.level != levelWorktrees && p.running {
 		t.Error("descending with no deps should not leave the picker running")

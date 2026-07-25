@@ -31,11 +31,21 @@ func (p *Picker) pickerView() string {
 	add(dimStyle.Render(p.countSummary()))
 	add("")
 
-	p.listTop = len(lines)
-	rows := p.viewRows()
-	p.visibleRows = len(rows)
-	lines = append(lines, rows...)
-	add("")
+	if p.editing {
+		// The prompt box takes the list's space rather than sitting under it:
+		// while you are writing a prompt, the list is not what you are looking
+		// at, and a popup has no room to pretend otherwise.
+		p.visibleRows = 0
+		add(labelStyle.Render("  Prompt (typed, not submitted)"))
+		lines = append(lines, strings.Split(p.promptArea.View(), "\n")...)
+		add("")
+	} else {
+		p.listTop = len(lines)
+		rows := p.viewRows()
+		p.visibleRows = len(rows)
+		lines = append(lines, rows...)
+		add("")
+	}
 
 	p.toggleRow = len(lines)
 	add(p.viewAgentToggle())
@@ -65,6 +75,12 @@ func (p *Picker) viewTitle() string {
 }
 
 func (p *Picker) countSummary() string {
+	if p.linkMode {
+		if c, ok := p.selected(); ok && c.Kind == session.KindSpace {
+			return "already open"
+		}
+		return "one result"
+	}
 	if p.level == levelWorktrees && len(p.all) == 0 {
 		return "no worktrees or branches found"
 	}
@@ -154,6 +170,10 @@ func rowTag(k session.Kind) string {
 		return remoteTagStyle.Render("remote")
 	case session.KindNewBranch:
 		return createTagStyle.Render("create")
+	case session.KindLink:
+		return createTagStyle.Render("link  ")
+	case session.KindClone:
+		return remoteTagStyle.Render("clone ")
 	case session.KindPrunable:
 		return errStyle.Render("gone  ")
 	default: // KindProject
@@ -262,22 +282,40 @@ func (p *Picker) viewAgentToggle() string {
 }
 
 func (p *Picker) viewPickerHint() string {
+	if p.editing {
+		return keyStyle.Render("ctrl+s") + dimStyle.Render(" open  ") +
+			keyStyle.Render("ctrl+e") + dimStyle.Render(" back to the list  ") +
+			keyStyle.Render("esc") + dimStyle.Render(" back")
+	}
+
 	hint := keyStyle.Render("↑↓") + dimStyle.Render(" move  ") +
 		keyStyle.Render("enter") + dimStyle.Render(" open  ")
+
+	// Only advertise the prompt editor where it would do something.
+	if c, ok := p.selected(); ok && startsAnAgent(c) && p.agentOn {
+		hint += keyStyle.Render("ctrl+e") + dimStyle.Render(" prompt  ")
+	}
 
 	if p.level == levelWorktrees {
 		// esc only goes back when there is a level underneath to go back to.
 		escLabel := " back"
+		back := ""
 		if p.rootLevel == levelWorktrees {
 			escLabel = " cancel"
+		} else {
+			back = keyStyle.Render("shift+tab") + dimStyle.Render(" back  ")
 		}
-		return hint +
+		return hint + back +
 			keyStyle.Render("ctrl+r") + dimStyle.Render(" fetch  ") +
 			keyStyle.Render("ctrl+a") + dimStyle.Render(" agent  ") +
 			keyStyle.Render("esc") + dimStyle.Render(escLabel)
 	}
+	tabLabel := " worktrees  "
+	if c, ok := p.selected(); ok && c.Kind == session.KindClone {
+		tabLabel = " clone & branch  "
+	}
 	return hint +
-		keyStyle.Render("→") + dimStyle.Render(" worktrees  ") +
+		keyStyle.Render("tab") + dimStyle.Render(tabLabel) +
 		keyStyle.Render("ctrl+a") + dimStyle.Render(" agent  ") +
 		keyStyle.Render("esc") + dimStyle.Render(" cancel")
 }

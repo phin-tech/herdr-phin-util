@@ -210,6 +210,7 @@ func openDeps(client *herdr.Client) open.Deps {
 		Session: client,
 		PRs:     gh.New(),
 		Git:     gitcmd.New(),
+		Clone:   gh.New(),
 		Cwd:     invocationCwd(),
 	}
 }
@@ -246,8 +247,16 @@ func runPick() int {
 		return 1
 	}
 
+	// The raw Space list is handed over as well, so a pasted link can be
+	// matched against it by label without another round trip.
+	workspaces, err := client.Workspaces()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
 	p := tea.NewProgram(
-		ui.NewPicker(cfg, pickerDeps(client), client, candidates),
+		ui.NewPicker(cfg, pickerDeps(client), client, candidates).WithWorkspaces(workspaces),
 		tea.WithMouseCellMotion(),
 	)
 	final, err := p.Run()
