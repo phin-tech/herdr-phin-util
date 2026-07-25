@@ -53,7 +53,7 @@ func (f *fakeSession) CreateWorkspace(cwd, label string, focus bool) (herdr.Pane
 	}
 	return f.pane, f.workspaceID, nil
 }
-func (f *fakeSession) StartAgent(paneID, name, kind string) error {
+func (f *fakeSession) StartAgent(paneID, name, kind string, args []string) error {
 	f.startAgentCalls++
 	return nil
 }

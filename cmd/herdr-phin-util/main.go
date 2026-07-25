@@ -7,6 +7,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -36,6 +38,9 @@ usage:
   herdr-phin-util project <dir> [--agent|--no-agent]
                                        open a Space on a checkout
   herdr-phin-util promote [pane_id]    move a pane into a Space of its own
+  herdr-phin-util handoff [--session ID] [--label TEXT] [--cwd PATH]
+                         [--dry-run] [--force]
+                                       resume a Claude session in a new Space
   herdr-phin-util version
 
 promote targets the focused pane when no id is given.
@@ -51,6 +56,16 @@ pick-worktree starts there for the repo you are already in.
 
 projects and worktrees print what each level would offer without opening
 anything, which is the way to check a roots setting or a branch list.
+
+handoff is run from a Claude session that started outside Herdr. It opens a
+Space on the same directory and resumes the same conversation there. It is not
+a move -- the original process stays where it is and has to be quit -- so
+inside Herdr use promote instead, which moves the live pane.
+
+It finds the session from $CLAUDE_CODE_SESSION_ID, then the newest transcript
+for this directory, then the newest anywhere -- and when it has to reach that
+far it says so and opens the Space in the session's own directory. --dry-run
+prints which session it would take without opening anything.
 `
 
 func main() {
@@ -75,6 +90,8 @@ func main() {
 		os.Exit(runWorktrees())
 	case "project":
 		os.Exit(runProject(args[1:]))
+	case "handoff":
+		os.Exit(runHandoff(args[1:]))
 	case "promote":
 		var target string
 		if len(args) > 1 {
@@ -475,6 +492,165 @@ func invocationCwd() string {
 		return wd
 	}
 	return ""
+}
+
+// runHandoff resumes the Claude session the caller is sitting in inside a new
+// Space.
+//
+// Unlike everything else here it is meant to be run from *outside* Herdr, so
+// there is no plugin action for it and no notification-only path: there is
+// always a terminal watching, and that terminal is the one being left behind.
+func runHandoff(args []string) int {
+	var opts open.HandoffOptions
+	var force, dryRun bool
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--force":
+			force = true
+		case "--dry-run":
+			dryRun = true
+		case "--session", "--label", "--cwd":
+			flag := args[i]
+			i++
+			if i >= len(args) {
+				fmt.Fprintf(os.Stderr, "%s needs a value\n", flag)
+				return 2
+			}
+			switch flag {
+			case "--session":
+				opts.SessionID = args[i]
+			case "--label":
+				opts.Label = args[i]
+			case "--cwd":
+				opts.Cwd = args[i]
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag %q\n", args[i])
+			return 2
+		}
+	}
+
+	// A dry run answers "which conversation would you take?" and stops. It
+	// deliberately runs before the Herdr connection and before the guard
+	// below: neither has anything to do with the question being asked, and
+	// the answer is just as useful from inside Herdr as outside it.
+	if dryRun {
+		plan, err := open.PlanHandoff(open.Deps{Cwd: invocationCwd()}, opts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		// The environment names a session without saying anything about when
+		// it was last touched, so the age is genuinely unknown there rather
+		// than zero.
+		if plan.ModTime.IsZero() {
+			fmt.Printf("would resume %s\n", shortSessionID(plan.SessionID))
+		} else {
+			fmt.Printf("would resume %s (%s)\n", shortSessionID(plan.SessionID), ago(plan.ModTime))
+		}
+		fmt.Printf("        into %s, Space %q\n", tildePath(plan.Cwd), plan.Label)
+		if plan.Widened {
+			fmt.Println("        found outside this directory -- the Space follows the session")
+		}
+		return 0
+	}
+
+	// Inside Herdr, handing off *this* session is the wrong tool. promote
+	// relocates the live pane -- same PID, same scrollback, same session --
+	// where this can only resume a transcript into a new process. Silently
+	// doing the worse thing when the better one is available would be a bad
+	// trade to make on someone's behalf.
+	//
+	// An explicit --session is a different request: it names some other
+	// conversation, which promote cannot reach at all.
+	if os.Getenv("HERDR_ENV") == "1" && opts.SessionID == "" && !force {
+		fmt.Fprintln(os.Stderr, "this session is already inside Herdr; use `promote` instead --")
+		fmt.Fprintln(os.Stderr, "it moves the live pane rather than resuming a copy of it.")
+		fmt.Fprintln(os.Stderr, "pass --force if you really want a second, resumed session.")
+		return 2
+	}
+
+	client, err := herdr.New()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	out, err := open.RunHandoff(openDeps(client), opts)
+	reportWidenedSession(out)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		// Same split as runOpen and runProject: a Space that exists but whose
+		// agent step failed is not the same as no Space at all.
+		if out.WorkspaceID != "" {
+			fmt.Printf("Space %s (%s) was created; resuming the session failed\n", out.Label, out.WorkspaceID)
+			_ = client.Notify("Space ready, handoff failed", err.Error())
+		} else {
+			_ = client.Notify("Handoff failed", err.Error())
+		}
+		return 1
+	}
+
+	fmt.Printf("resumed in Space %s (pane %s)\n", out.WorkspaceID, out.PaneID)
+	// The whole point of saying this: the transcript moved, the process did
+	// not. Two Claudes appending to one session file will diverge, and the
+	// one still running here is the one that has to go.
+	fmt.Println("this session is now the old copy -- quit it with /exit")
+	if os.Getenv("CLAUDECODE") == "1" {
+		fmt.Println("(you are inside that session's own shell, so it is very much still running)")
+	}
+	_ = client.Notify("Session handed off", out.Label)
+	return 0
+}
+
+// reportWidenedSession announces a session found outside the directory the
+// command was run from.
+//
+// Widening is a guess, and an invisible guess is the bad kind: the whole
+// point of printing it is that "that is not the conversation I meant" should
+// be obvious immediately rather than after reading the transcript.
+func reportWidenedSession(out open.Outcome) {
+	if !out.SessionWidened {
+		return
+	}
+	fmt.Println("no session here -- using the most recent one:")
+	fmt.Printf("  %s  %s  (%s)\n", shortSessionID(out.SessionID), tildePath(out.RepoPath), ago(out.SessionModTime))
+}
+
+// shortSessionID trims a session uuid to its first group, which is enough to
+// recognise one and short enough to sit in a line of prose.
+func shortSessionID(id string) string {
+	if group, _, ok := strings.Cut(id, "-"); ok {
+		return group
+	}
+	return id
+}
+
+// tildePath shortens a path under the user's home, since that prefix is the
+// same on every line and carries no information.
+func tildePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(path, home+string(os.PathSeparator)) {
+		return path
+	}
+	return "~" + path[len(home):]
+}
+
+// ago renders an age the way a person would say it. Precision past the unit
+// is noise here -- the question being answered is only ever "is this the
+// session I was just in, or some forgotten one?".
+func ago(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 // runPromote reports through a notification as well as stderr: fired from a

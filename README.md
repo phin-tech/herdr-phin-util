@@ -67,6 +67,84 @@ bin/herdr-phin-util promote w4:p2    # promotes a named pane
 The explicit form is what makes the action testable: focus follows the real UI,
 so a test cannot hold focus on a background Space to exercise itself.
 
+## Hand a Claude session in from outside Herdr
+
+The companion to promote, for the sessions promote cannot reach. You started
+Claude in a plain terminal window, the conversation turned into real work, and
+now you want it in Herdr with everything else.
+
+```sh
+herdr-phin-util handoff                        # resume this session in a new Space
+herdr-phin-util handoff --dry-run              # say which session, open nothing
+herdr-phin-util handoff --label "auth rework"  # name the Space yourself
+herdr-phin-util handoff --session <uuid>       # resume some other conversation
+herdr-phin-util handoff --cwd ~/src/other      # look for the session elsewhere
+```
+
+**It is not a move, and it cannot be.** Herdr can only relocate panes it
+already owns, so there is no live process to carry across — this opens a Space
+on the same directory and starts a fresh `claude --resume` against the same
+session file. The conversation arrives intact; the process does not. **Quit the
+original with `/exit`** once the new one is up, because two Claudes appending
+to one session file will diverge.
+
+That is the whole difference between the two commands, and it is worth keeping
+straight:
+
+| | promote | handoff |
+| --- | --- | --- |
+| Run from | inside Herdr | outside it |
+| What moves | the live pane — same PID, same scrollback | the transcript only |
+| Afterwards | nothing to do | quit the original |
+
+Run inside Herdr it refuses and points at promote, since promote is strictly
+better whenever it applies. `--force` overrides that if you actually want a
+second, resumed copy.
+
+### Which session it picks
+
+Outwards, stopping at the first thing that answers:
+
+1. `--session`, if you passed one.
+2. `$CLAUDE_CODE_SESSION_ID`, which Claude exports into every session it runs.
+   This is the exact answer, and the usual one — you are normally running the
+   command from inside the session being handed off.
+3. The newest transcript for the current directory. This covers running from a
+   shell *beside* the session rather than inside it, and is the same guess
+   `claude --continue` makes.
+4. The newest transcript **anywhere**, for when you are somewhere Claude has
+   never been. The Space then opens in the *session's* directory rather than
+   the one you are standing in — resuming a conversation about one repo in the
+   directory of another would be worse than not finding it.
+
+Step 4 is a guess, so it announces itself:
+
+```
+$ herdr-phin-util handoff
+no session here -- using the most recent one:
+  a3460e51  ~/src/github.com/ogulcancelik/herdr  (12m ago)
+resumed in Space w1D (pane w1D:p1)
+```
+
+`--dry-run` asks the same question without acting on the answer, which is the
+cheap way to check a guess before it becomes a Space:
+
+```
+$ herdr-phin-util handoff --dry-run
+would resume a3460e51 (12m ago)
+        into ~/src/github.com/ogulcancelik/herdr, Space "herdr"
+        found outside this directory -- the Space follows the session
+```
+
+The directory comes from inside the transcript, not from the folder Claude
+files it under: that folder's name turns both `/` and `.` into `-`, so
+`foo.bar` and `foo/bar` are indistinguishable once written.
+
+There is no keybinding and no action menu entry: a plugin action fires from
+inside Herdr, and being outside it is this command's entire premise. It does
+need to be on your `PATH`, since an external terminal has no
+`$HERDR_PLUGIN_ROOT` to find the binary through.
+
 ## New Space from a pasted link
 
 > The project picker below now takes links in its own box, and adds

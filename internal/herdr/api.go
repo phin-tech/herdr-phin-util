@@ -251,13 +251,20 @@ func (c *Client) CreateWorkspace(cwd, label string, focus bool) (Pane, string, e
 // initialize; this sits comfortably under agent.wait's own 300000ms ceiling.
 const agentIdleTimeoutMs = 120000
 
-// StartAgent launches an agent in an existing pane.
-func (c *Client) StartAgent(paneID, name, kind string) error {
-	return c.Request("agent.start", map[string]any{
+// StartAgent launches an agent in an existing pane. args is passed to the
+// agent's own command line -- "--resume <id>" and nothing else, so far --
+// and is omitted from the request entirely when empty, since agent.start
+// treats an absent args and an empty one differently for some kinds.
+func (c *Client) StartAgent(paneID, name, kind string, args []string) error {
+	params := map[string]any{
 		"pane_id": paneID,
 		"name":    name,
 		"kind":    kind,
-	}, nil)
+	}
+	if len(args) > 0 {
+		params["args"] = args
+	}
+	return c.Request("agent.start", params, nil)
 }
 
 // WaitAgentIdle blocks until the agent in paneID reports idle. Typing a

@@ -53,7 +53,10 @@ type createWorkspaceCall struct {
 	cwd, label string
 	focus      bool
 }
-type startAgentCall struct{ paneID, name, kind string }
+type startAgentCall struct {
+	paneID, name, kind string
+	args               []string
+}
 type waitOutputCall struct {
 	paneID, value string
 	timeoutMs     int
@@ -81,8 +84,8 @@ func (f *fakeSession) CreateWorkspace(cwd, label string, focus bool) (herdr.Pane
 	return f.pane, f.workspaceID, nil
 }
 
-func (f *fakeSession) StartAgent(paneID, name, kind string) error {
-	f.startAgentCalls = append(f.startAgentCalls, startAgentCall{paneID, name, kind})
+func (f *fakeSession) StartAgent(paneID, name, kind string, args []string) error {
+	f.startAgentCalls = append(f.startAgentCalls, startAgentCall{paneID, name, kind, args})
 	if f.startAgentBusyUntilCall > 0 && len(f.startAgentCalls) < f.startAgentBusyUntilCall {
 		return &herdr.APIError{Method: "agent.start", Code: "agent_pane_busy", Message: "agent target pane is not an available shell"}
 	}

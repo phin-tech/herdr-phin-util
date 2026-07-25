@@ -29,7 +29,7 @@ type Session interface {
 	CreateWorktree(req herdr.WorktreeRequest) (herdr.Pane, string, error)
 	OpenWorktree(req herdr.WorktreeRequest) (herdr.Pane, string, error)
 	CreateWorkspace(cwd, label string, focus bool) (herdr.Pane, string, error)
-	StartAgent(paneID, name, kind string) error
+	StartAgent(paneID, name, kind string, args []string) error
 	WaitAgentIdle(paneID string) error
 	WaitPaneOutput(paneID, value string, timeoutMs int) error
 	SendText(paneID, text string) error
@@ -116,10 +116,10 @@ func agentName(label string) string {
 // startAgentWithRetry backs off linearly: the pane usually settles within the
 // first interval, and the total budget stays comfortably under the time a
 // person would wait before deciding the keypress did nothing.
-func startAgentWithRetry(s Session, paneID, name, kind string) error {
+func startAgentWithRetry(s Session, paneID, name, kind string, args []string) error {
 	var err error
 	for attempt := 1; attempt <= startAgentAttempts; attempt++ {
-		if err = s.StartAgent(paneID, name, kind); err == nil {
+		if err = s.StartAgent(paneID, name, kind, args); err == nil {
 			return nil
 		}
 		var apiErr *herdr.APIError
@@ -185,6 +185,17 @@ type Outcome struct {
 	// PromptSent is the exact text typed into the pane, empty when the agent
 	// step did not run.
 	PromptSent string
+
+	// SessionID is the agent session a handoff resumed. Empty for every other
+	// path through this package, which all start something new.
+	SessionID string
+	// SessionWidened records that the session was found outside the directory
+	// the command was run from, so the caller can report a pick the user did
+	// not obviously ask for.
+	SessionWidened bool
+	// SessionModTime is when that session was last written, which is the only
+	// useful thing to say about a session found by searching.
+	SessionModTime time.Time
 }
 
 // Run parses input and builds the Space it describes.
@@ -360,7 +371,9 @@ func runAgentStep(s Session, cfg *config.Settings, tgt target.Target, opts Optio
 		return out, nil
 	}
 
-	if err := startAgentWithRetry(s, paneID, agentName(tgt.Label()), cfg.Agent.Kind); err != nil {
+	// No args: every path through here starts a fresh agent, and only the
+	// handoff has a session to resume.
+	if err := startAgentWithRetry(s, paneID, agentName(tgt.Label()), cfg.Agent.Kind, nil); err != nil {
 		return out, fmt.Errorf("start agent: %w", err)
 	}
 	// Typing into a pane that is still on a startup banner would land in the
