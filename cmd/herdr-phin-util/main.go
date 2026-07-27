@@ -49,14 +49,15 @@ usage:
 
 promote targets the focused pane when no id is given.
 
-open recognises a GitHub pull request URL, a Linear issue URL, or anything
-else (used as a plain Space name). --agent/--no-agent override the config's
-agent.enabled; --prompt overrides the rendered template text outright.
+open recognises a GitHub pull request or issue URL, a repository reference, a
+Linear issue URL, or anything else (used as a plain Space name).
+--agent/--no-agent override the config's agent.enabled; --prompt overrides the
+rendered template text outright.
 
 pick lists the Spaces already open followed by every checkout found under
 [projects].roots that has no Space yet: switch to the first, create the
-second. Right-arrow on a repo descends into its worktrees and branches;
-pick-worktree starts there for the repo you are already in.
+second. tab on a repo descends into its worktrees and branches, and shift+tab
+comes back; pick-worktree starts there for the repo you are already in.
 
 projects, worktrees and setups print what each level would offer without
 opening anything, which is the way to check a roots setting, a branch list, or
@@ -126,7 +127,7 @@ func main() {
 // workspace maker": everything the popup does, without the popup.
 func runOpen(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-phin-util open <link-or-text> [--agent|--no-agent] [--prompt TEXT]")
+		fmt.Fprintln(os.Stderr, "usage: herdr-phin-util open <link-or-text> [--agent|--no-agent] [--prompt TEXT] [--setup NAME] [--dry-run]")
 		return 2
 	}
 	input := args[0]

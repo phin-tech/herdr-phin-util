@@ -356,7 +356,9 @@ works for a PR, an issue, a Linear ticket or a plain checkout.
 | neither | a shell at its prompt |
 
 Also per pane: `split` (`right`/`down`), `ratio`, `label`, `cwd`, `env`,
-`focus`, `wait_for`. `cwd` and `env` inherit setup → tab → pane.
+`focus`, `wait_for`. `cwd` and `env` inherit setup → tab → pane. A tab takes
+`command:` directly instead of `panes:` when it's one command and nothing else,
+and a tab with neither is one plain shell.
 
 - `submit: true` presses Enter. **Omitted means type it and leave it** — read
   the orchestrator's brief before firing it, while the workers are already going.
