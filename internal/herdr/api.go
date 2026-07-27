@@ -452,8 +452,13 @@ type Agent struct {
 	// while it is set, agent.prompt rejects the target with agent_not_ready no
 	// matter what the pane is showing or what agent_status says. Nothing else
 	// exposed by the API reports it -- pane.list already calls the pane an
-	// agent, and agent.wait will happily answer "idle" -- so this field is the
-	// only honest answer to "can this agent be prompted yet".
+	// agent, and agent.wait will happily answer "idle".
+	//
+	// It says the launch handshake finished, not that the agent has drawn an
+	// input: measured on codex, it clears on process detection while the
+	// first-run screens are still up. So it is a necessary condition for
+	// prompting rather than a sufficient one -- see readyMarkers, which is
+	// what tells a drawn input from a startup screen.
 	LaunchPending bool `json:"launch_pending"`
 }
 

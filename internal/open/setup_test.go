@@ -235,6 +235,61 @@ func TestApplySetupWaitTimeoutIsNotFatal(t *testing.T) {
 	}
 }
 
+// codex clears launch_pending on process detection, seconds before its input
+// exists, and reports interactive_ready on its own first-run screens -- so the
+// on-screen marker is the only thing standing between a prompt and a startup
+// screen. It has to be waited for before anything is sent.
+func TestApplySetupWaitsForTheCodexInputBeforePrompting(t *testing.T) {
+	s := &fakeSession{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "codex", Prompt: "review this", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+
+	var waited bool
+	for _, call := range s.waitOutputCalls {
+		if call.value == readyMarkers["codex"] {
+			waited = true
+		}
+	}
+	if !waited {
+		t.Errorf("never waited for codex's input marker: %+v", s.waitOutputCalls)
+	}
+}
+
+// The bug this closes: the prompt went out into codex's first-run screen,
+// agent.prompt answered ok because delivery is not verified, and the pane sat
+// there empty with no warning. An input that never arrives must cost the step
+// loudly rather than swallow the prompt.
+func TestApplySetupDoesNotPromptACodexStuckOnItsStartupScreen(t *testing.T) {
+	s := &fakeSession{waitOutputErr: errors.New("timed out")}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Label: "codex-reviewer", Agent: "codex", Prompt: "review this", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if l.promptCalls != 0 || len(s.sendTextCalls) != 0 {
+		t.Errorf("the prompt was sent into a startup screen: agent.prompt calls=%d sendText=%+v", l.promptCalls, s.sendTextCalls)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "render its prompt") {
+		t.Errorf("problems = %v, want the dropped pane reported", problems)
+	}
+	if !strings.Contains(l.transcript(), "failed: codex-reviewer") {
+		t.Errorf("the pane was not marked failed:\n%s", l.transcript())
+	}
+}
+
 func TestApplySetupFocusesTheMarkedPane(t *testing.T) {
 	l := &fakeLayout{}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{

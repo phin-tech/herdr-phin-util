@@ -493,10 +493,12 @@ func TestRunAgentWithKnownMarkerWaitsForItAfterIdle(t *testing.T) {
 }
 
 // A kind with no verified marker must not wait for one -- guessing text that
-// never appears would hang the action instead of merely mistiming it.
+// never appears would hang the action instead of merely mistiming it. gemini
+// stands in for that here: it is a kind nobody has sat down with a scratch
+// pane and read back, which is what earns a marker.
 func TestRunAgentWithUnknownKindSkipsMarkerWait(t *testing.T) {
 	cwd := t.TempDir()
-	cfg := &config.Settings{Agent: config.AgentSettings{Enabled: true, Kind: "codex"}, Prompts: config.PromptSettings{Plain: "hi"}}
+	cfg := &config.Settings{Agent: config.AgentSettings{Enabled: true, Kind: "gemini"}, Prompts: config.PromptSettings{Plain: "hi"}}
 	sess := &fakeSession{pane: herdr.Pane{PaneID: "p1"}, workspaceID: "w1"}
 
 	_, err := Run(Deps{Session: sess, PRs: &fakePRLookup{}, Git: &fakeFetcher{}, Cwd: cwd}, cfg, "notes", Options{})

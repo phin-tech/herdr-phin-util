@@ -358,13 +358,16 @@ func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID st
 	return nil
 }
 
-// Launch settling. Neither of the waits above is the state agent.prompt
-// requires: agent.wait answers "idle" for an agent that has not really started
-// -- an agent doing nothing yet looks exactly like an agent that is done -- and
-// the on-screen marker only proves the terminal drew something. Herdr keeps the
-// real answer in the agent's launch_pending flag, and it clears a couple of
-// seconds after the input renders. Polling it is what turns "send the prompt
-// and hope" into an ordering.
+// Launch settling. agent.wait answers "idle" for an agent that has not really
+// started -- an agent doing nothing yet looks exactly like an agent that is
+// done -- so launch_pending is the floor underneath it: agent.prompt rejects a
+// pending agent outright, whatever the pane shows.
+//
+// It is a floor and not a guarantee. Measured on a live codex, launch_pending
+// clears on process detection, seconds before the input is drawn, and Herdr's
+// interactive_ready reports true on codex's own first-run screens as well. The
+// on-screen marker in readyMarkers is what actually distinguishes an input from
+// a startup screen, which is why a kind that has one waits for it too.
 const (
 	agentLaunchBudget = 45 * time.Second
 	agentLaunchPoll   = 300 * time.Millisecond

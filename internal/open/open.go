@@ -46,8 +46,29 @@ type Session interface {
 // missing from this map falls back to agent_status alone: waiting for text
 // that turns out to be wrong would hang the action rather than just mistime
 // it, and hanging is worse.
+//
+// A marker has to be text the input draws and the startup screens do not, which
+// is a stricter test than it sounds. Measured against a live codex on its first
+// run in a fresh worktree:
+//
+//	t+0.3s  launch_pending=true    update-nag menu drawn
+//	t+3.4s  launch_pending absent, interactive_ready=TRUE, still on the menu
+//	...     trust prompt, still interactive_ready=true, input never drawn
+//	        -- and only once past both does the footer appear
+//
+// So neither flag Herdr exposes is the answer for codex: launch_pending clears
+// on process detection, and interactive_ready -- the field the obvious fix
+// would reach for -- reports true while codex sits on its update nag and its
+// "do you trust this directory" prompt. Both screens are also full of "›",
+// which is codex's menu cursor as much as its input caret, so the caret is not
+// a marker either.
+//
+// The footer codex draws under its input ("<model> · <cwd>", U+00B7) is absent
+// from both gate screens and appeared within a second of the input in every
+// run. That is what is waited for.
 var readyMarkers = map[string]string{
 	"claude": "❯",
+	"codex":  " · ",
 }
 
 // readyMarkerTimeoutMs bounds the extra on-screen check. It runs after
