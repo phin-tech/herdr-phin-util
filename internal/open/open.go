@@ -34,6 +34,7 @@ type Session interface {
 	StartAgent(paneID, name, kind string, args []string) error
 	WaitAgentIdle(paneID string) error
 	WaitPaneOutput(paneID, value string, timeoutMs int) error
+	AgentLaunched(paneID string) (bool, error)
 	SendText(paneID, text string) error
 }
 
@@ -57,6 +58,11 @@ const readyMarkerTimeoutMs = 30000
 // sleep is the retry backoff, swapped out in tests so they do not spend real
 // seconds waiting.
 var sleep = time.Sleep
+
+// now is the clock a bounded wait measures its budget against. It travels with
+// sleep: a test that skips the waiting also has to skip the time, or a wait
+// that is never going to succeed would still spend its whole budget.
+var now = time.Now
 
 // agent.start rejects a pane Herdr has only just built with agent_pane_busy:
 // the shell exists but is not yet registered as an available target. Creating

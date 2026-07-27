@@ -365,6 +365,10 @@ plain shell.
 
 - `submit: true` presses Enter. **Omitted means type it and leave it** — read
   the orchestrator's brief before firing it, while the workers are already going.
+  A submitted prompt waits for Herdr to finish launching the agent, which is a
+  couple of seconds after its input appears; a pane whose agent never gets
+  there — stuck on a trust dialog or an upgrade nag — says so rather than
+  sitting idle with nothing typed.
 - `wait_for: { match: "queued", timeout_ms: 20000 }` holds the rest of the
   layout until that pane's output matches. A timeout isn't fatal.
 - `model: opus` and `args: ["--permission-mode", "plan"]` are the agent's

@@ -19,8 +19,12 @@ import (
 func TestMain(m *testing.M) {
 	os.Unsetenv("HERDR_PLUGIN_CONTEXT_JSON")
 	// The retry backoff is real time.Sleep in production; tests swap it out
-	// so a retry test finishes in milliseconds rather than seconds.
-	sleep = func(time.Duration) {}
+	// so a retry test finishes in milliseconds rather than seconds. The clock
+	// goes with it, advanced by every skipped sleep: a bounded wait still has
+	// to reach its deadline, it just gets there without anyone waiting.
+	clock := time.Now()
+	sleep = func(d time.Duration) { clock = clock.Add(d) }
+	now = func() time.Time { return clock }
 	os.Exit(m.Run())
 }
 
@@ -47,6 +51,17 @@ type fakeSession struct {
 	waitOutputErr           error
 	sendTextCalls           []sendTextCall
 	sendTextErr             error
+
+	// launchedAfterCall makes AgentLaunched report "still launching" for every
+	// call before this one (1-indexed), which is how the gap between a rendered
+	// prompt and an agent that will accept one is expressed. Zero means the
+	// agent is launched from the first look, which is what most tests want.
+	launchedAfterCall int
+	launchedCalls     int
+	// launchNever holds the agent at "still launching" forever, standing in for
+	// one stuck on its own first-run UI.
+	launchNever bool
+	launchedErr error
 }
 
 type createWorkspaceCall struct {
@@ -100,6 +115,17 @@ func (f *fakeSession) WaitAgentIdle(paneID string) error {
 func (f *fakeSession) WaitPaneOutput(paneID, value string, timeoutMs int) error {
 	f.waitOutputCalls = append(f.waitOutputCalls, waitOutputCall{paneID, value, timeoutMs})
 	return f.waitOutputErr
+}
+
+func (f *fakeSession) AgentLaunched(paneID string) (bool, error) {
+	f.launchedCalls++
+	if f.launchedErr != nil {
+		return false, f.launchedErr
+	}
+	if f.launchNever {
+		return false, nil
+	}
+	return f.launchedCalls >= f.launchedAfterCall, nil
 }
 
 func (f *fakeSession) SendText(paneID, text string) error {

@@ -439,6 +439,52 @@ func (c *Client) PromptAgent(paneID, text string) error {
 	}, nil)
 }
 
+// Agent is one entry from an agent.list snapshot: a pane Herdr has recognised
+// as running an agent, plus the name agent.start gave it.
+type Agent struct {
+	Name        string `json:"name"`
+	Kind        string `json:"agent"`
+	PaneID      string `json:"pane_id"`
+	AgentStatus string `json:"agent_status"`
+
+	// LaunchPending is Herdr's own "this agent was started but its launch has
+	// not completed" flag, and it is the precondition agent.prompt enforces:
+	// while it is set, agent.prompt rejects the target with agent_not_ready no
+	// matter what the pane is showing or what agent_status says. Nothing else
+	// exposed by the API reports it -- pane.list already calls the pane an
+	// agent, and agent.wait will happily answer "idle" -- so this field is the
+	// only honest answer to "can this agent be prompted yet".
+	LaunchPending bool `json:"launch_pending"`
+}
+
+// Agents lists every agent Herdr currently recognises.
+func (c *Client) Agents() ([]Agent, error) {
+	var res struct {
+		Agents []Agent `json:"agents"`
+	}
+	if err := c.Request("agent.list", map[string]any{}, &res); err != nil {
+		return nil, err
+	}
+	return res.Agents, nil
+}
+
+// AgentLaunched reports whether the agent in paneID has finished launching and
+// can therefore be prompted. A pane with no agent entry at all is not launched:
+// detection lags agent.start by a moment, and "not there yet" and "there but
+// still starting" are the same answer to the caller.
+func (c *Client) AgentLaunched(paneID string) (bool, error) {
+	agents, err := c.Agents()
+	if err != nil {
+		return false, err
+	}
+	for _, a := range agents {
+		if a.PaneID == paneID {
+			return !a.LaunchPending, nil
+		}
+	}
+	return false, nil
+}
+
 // agentIdleTimeoutMs bounds how long WaitAgentIdle waits for an agent to
 // finish starting up and settle, before giving up. Some agents are slow to
 // initialize; this sits comfortably under agent.wait's own 300000ms ceiling.
@@ -463,6 +509,12 @@ func (c *Client) StartAgent(paneID, name, kind string, args []string) error {
 // WaitAgentIdle blocks until the agent in paneID reports idle. Typing a
 // prompt before that would land on a startup banner instead of the agent's
 // actual input.
+//
+// Idle is not the same as launched. Called moments after agent.start, this
+// answers "idle" straight away -- an agent that has not really started yet is
+// not doing anything, which is indistinguishable from an agent that is done --
+// so it is a floor on readiness rather than a guarantee of it. Use
+// AgentLaunched for the state agent.prompt actually requires.
 func (c *Client) WaitAgentIdle(paneID string) error {
 	return c.RequestWithin(waitDeadline(agentIdleTimeoutMs), "agent.wait", map[string]any{
 		"target":     paneID,

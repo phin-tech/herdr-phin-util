@@ -247,7 +247,7 @@ func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID
 		}
 
 	case step.Agent != "":
-		if err := startSetupAgent(s, cfg, step, paneID, index); err != nil {
+		if err := startSetupAgent(s, cfg, step, paneID, index, step.Submit); err != nil {
 			return err
 		}
 		if strings.TrimSpace(step.Prompt) == "" {
@@ -282,6 +282,14 @@ func sendSetupPrompt(s Session, l Layout, step setup.Step, paneID string) error 
 	err := send()
 	if err == nil {
 		return nil
+	}
+	// A submitted prompt that was rejected was rejected on readiness, so the
+	// retry waits for the state agent.prompt wants rather than for a fixed
+	// interval and another guess. The launch wait already ran before this, so
+	// reaching here means it went stale between then and now -- rare, and worth
+	// one more pass rather than a dropped prompt.
+	if step.Submit {
+		_ = waitAgentLaunched(s, paneID)
 	}
 	sleep(promptRetryBackoff)
 	if retryErr := send(); retryErr == nil {
@@ -320,7 +328,12 @@ func markPaneFailed(l Layout, paneID string, step setup.Step) {
 // typed into, reusing the retry and readiness rules the single-agent path
 // already established -- including that agent.start rejects a pane Herdr has
 // only just built.
-func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID string, index int) error {
+//
+// needsPrompting says whether the pane's prompt goes through agent.prompt,
+// which has a stricter idea of ready than anything on screen does. Only then is
+// a launch that never completes fatal to the step: a pane that is only being
+// typed into works fine from the moment its input renders.
+func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID string, index int, needsPrompting bool) error {
 	kind := step.Agent
 	if !config.KnownAgentKind(kind) {
 		return fmt.Errorf("tab %q: %q is not an agent Herdr knows", stepTab(step), kind)
@@ -338,7 +351,48 @@ func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID st
 			return fmt.Errorf("wait for %s in tab %q to render its prompt: %w", kind, stepTab(step), err)
 		}
 	}
+	if err := waitAgentLaunched(s, paneID); err != nil && needsPrompting {
+		return fmt.Errorf("wait for %s in tab %q to finish launching: %w", kind, stepTab(step), err)
+	}
 	return nil
+}
+
+// Launch settling. Neither of the waits above is the state agent.prompt
+// requires: agent.wait answers "idle" for an agent that has not really started
+// -- an agent doing nothing yet looks exactly like an agent that is done -- and
+// the on-screen marker only proves the terminal drew something. Herdr keeps the
+// real answer in the agent's launch_pending flag, and it clears a couple of
+// seconds after the input renders. Polling it is what turns "send the prompt
+// and hope" into an ordering.
+const (
+	agentLaunchBudget = 45 * time.Second
+	agentLaunchPoll   = 300 * time.Millisecond
+)
+
+// waitAgentLaunched blocks until Herdr says the agent has finished launching,
+// which is when it will accept a prompt.
+//
+// Each pass re-waits for idle as well as polling, because agent.wait is what
+// makes Herdr reconcile a launch it has already completed -- polling alone can
+// watch a launched agent stay pending. An agent that never gets there is
+// usually one stuck on its own first-run UI (a trust prompt, an upgrade nag),
+// so the timeout says that rather than repeating a bare code.
+func waitAgentLaunched(s Session, paneID string) error {
+	deadline := now().Add(agentLaunchBudget)
+	for {
+		launched, err := s.AgentLaunched(paneID)
+		if err != nil {
+			return err
+		}
+		if launched {
+			return nil
+		}
+		if !now().Before(deadline) {
+			return fmt.Errorf("agent never finished launching -- it may be waiting on a prompt of its own")
+		}
+		_ = s.WaitAgentIdle(paneID)
+		sleep(agentLaunchPoll)
+	}
 }
 
 // setupAgentName keeps agent names recognisable and unique within a Space:

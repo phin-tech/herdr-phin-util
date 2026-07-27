@@ -392,6 +392,78 @@ func TestApplySetupRetriesAPromptOnce(t *testing.T) {
 	}
 }
 
+// The whole point of the launch gate: a submitted prompt waits for the agent
+// to finish launching, and only then goes out. Without it the prompt is sent
+// into an agent Herdr will refuse -- which is the bug that lost two reviewer
+// prompts in a four-pane run.
+func TestApplySetupWaitsForLaunchBeforeSubmittingAPrompt(t *testing.T) {
+	s := &fakeSession{launchedAfterCall: 4}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Agent: "claude", Prompt: "review it", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none", problems)
+	}
+	if s.launchedCalls < 4 {
+		t.Errorf("polled launch state %d times, want it to keep looking until launched", s.launchedCalls)
+	}
+	if !strings.Contains(l.transcript(), "prompt root review it") {
+		t.Errorf("the prompt never went out:\n%s", l.transcript())
+	}
+}
+
+// An agent stuck on its own first-run UI never launches. That is a real
+// failure and it should say so, rather than surfacing as a bare rejection from
+// the prompt step.
+func TestApplySetupReportsAnAgentThatNeverLaunches(t *testing.T) {
+	s := &fakeSession{launchNever: true}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Agent: "codex", Prompt: "review it", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "never finished launching") {
+		t.Fatalf("problems = %v, want one naming the launch", problems)
+	}
+	if strings.Contains(l.transcript(), "prompt ") {
+		t.Errorf("prompted an agent that never launched:\n%s", l.transcript())
+	}
+	if !strings.Contains(l.transcript(), "label root failed:") {
+		t.Errorf("the pane was not marked failed:\n%s", l.transcript())
+	}
+}
+
+// A typed prompt goes through pane.send_text, which does not care whether the
+// agent has registered. An agent that is slow to launch must not cost that
+// pane its prompt.
+func TestApplySetupStillTypesIntoAnAgentThatNeverLaunches(t *testing.T) {
+	s := &fakeSession{launchNever: true}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Agent: "claude", Prompt: "read this first"},
+	}}}}
+
+	_, _, problems, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none -- typing needs no launch", problems)
+	}
+	if len(s.sendTextCalls) != 1 || s.sendTextCalls[0].text != "read this first" {
+		t.Errorf("send_text calls = %+v, want the prompt typed anyway", s.sendTextCalls)
+	}
+}
+
 func TestApplySetupAgentNamesAreUniqueAndValid(t *testing.T) {
 	s := &fakeSession{}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
