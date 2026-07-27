@@ -66,7 +66,8 @@ A setup is a YAML recipe -- tabs, panes, agents, prompts and commands -- read
 from setups/ and repos/<repo>/ in the plugin config directory, and from
 .herdr-setups.yaml inside a checkout. --setup applies one to whatever is being
 opened; --dry-run prints what it would build and touches nothing. In the
-picker, ctrl+t opens the setup list for the highlighted row.
+picker, tab on a worktree or link row opens the setup list, and ctrl+t does so
+from any row.
 
 handoff is run from a Claude session that started outside Herdr. It opens a
 Space on the same directory and resumes the same conversation there. It is not

@@ -130,8 +130,9 @@ herdr-phin-util open <url> --setup pr-review
 herdr-phin-util project ~/src/o/r --setup dev
 ```
 
-In the picker (`herdr-phin-util pick`), `ctrl+t` on a row opens the setups that
-apply to it; `esc` comes back. Enter without `ctrl+t` is unchanged.
+In the picker (`herdr-phin-util pick`), `tab` on a worktree, branch or link row
+opens the setups that apply to it, and `ctrl+t` does so from any row; `esc` or
+`shift+tab` comes back. Enter without either is unchanged.
 
 ## Writing one: the loop
 

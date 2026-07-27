@@ -512,12 +512,23 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// tab descends, shift+tab comes back. Deliberately not the arrow keys:
 	// the input box holds pasted URLs now, and text you cannot move a cursor
 	// through is text you cannot correct.
+	//
+	// "Deeper" is one meaning, applied to whatever the row actually has
+	// underneath it: a repository has worktrees, and a worktree, a branch or a
+	// pasted link has only the question of how to build it. So tab lands on
+	// the setups when there is no level below -- which is also what makes the
+	// flagship path one pass: paste a PR, tab, pick the review layout, enter.
 	case "tab", "ctrl+w":
-		if p.level == levelProjects {
-			if c, ok := p.selected(); ok && canDescend(c) {
-				return p, p.descend(c)
-			}
+		if p.level == levelSetups {
+			return p, nil
 		}
+		// Only the project level has a repository underneath it. A Space row
+		// one level down is a worktree that is already open, and re-listing
+		// the repository it belongs to would be going sideways, not deeper.
+		if c, ok := p.selected(); ok && p.level == levelProjects && canDescend(c) {
+			return p, p.descend(c)
+		}
+		p.enterSetups()
 		return p, nil
 
 	case "shift+tab":

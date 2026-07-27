@@ -302,6 +302,26 @@ func (p *Picker) viewAgentToggle() string {
 	return "  " + text
 }
 
+// tabHint names what tab would do on the highlighted row, and reports false
+// when it would do nothing at all -- an open Space builds nothing, so it has
+// neither worktrees worth descending into nor a layout to choose.
+func (p *Picker) tabHint() (string, bool) {
+	c, ok := p.selected()
+	if !ok {
+		return "", false
+	}
+	if p.level == levelProjects && canDescend(c) {
+		if c.Kind == session.KindClone {
+			return " clone & branch  ", true
+		}
+		return " worktrees  ", true
+	}
+	if offersSetups(c) {
+		return " setup  ", true
+	}
+	return "", false
+}
+
 func (p *Picker) viewPickerHint() string {
 	if p.editing {
 		return keyStyle.Render("ctrl+s") + dimStyle.Render(" open  ") +
@@ -325,10 +345,11 @@ func (p *Picker) viewPickerHint() string {
 		hint += keyStyle.Render("ctrl+e") + dimStyle.Render(" prompt  ")
 	}
 
-	// The setup level is offered wherever a row would actually build
-	// something, which is both of the other levels.
-	if c, ok := p.selected(); ok && offersSetups(c) {
-		hint += keyStyle.Render("ctrl+t") + dimStyle.Render(" setup  ")
+	// tab is named for whatever the highlighted row actually has underneath
+	// it, since that is the only way one key with one meaning reads as one
+	// key: worktrees under a repository, setups under everything else.
+	if label, ok := p.tabHint(); ok {
+		hint += keyStyle.Render("tab") + dimStyle.Render(label)
 	}
 
 	if p.level == levelWorktrees {
@@ -345,12 +366,7 @@ func (p *Picker) viewPickerHint() string {
 			keyStyle.Render("ctrl+a") + dimStyle.Render(" agent  ") +
 			keyStyle.Render("esc") + dimStyle.Render(escLabel)
 	}
-	tabLabel := " worktrees  "
-	if c, ok := p.selected(); ok && c.Kind == session.KindClone {
-		tabLabel = " clone & branch  "
-	}
 	return hint +
-		keyStyle.Render("tab") + dimStyle.Render(tabLabel) +
 		keyStyle.Render("ctrl+a") + dimStyle.Render(" agent  ") +
 		keyStyle.Render("esc") + dimStyle.Render(" cancel")
 }

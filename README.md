@@ -504,8 +504,13 @@ unchanged.
 
 ### Pick one
 
-`ctrl+t` in the project picker, on any row that would actually build
-something:
+`tab` in the project picker. It has always meant "go deeper", and setups are
+what is deeper than a worktree, a branch or a pasted link — none of which had
+a level below them before. On a repository row `tab` still means its
+worktrees; `ctrl+t` goes straight to the setups from anywhere, which on a
+repository row means "this checkout, skip the branch question".
+
+So the flagship path is one pass: paste a PR, `tab`, pick the layout, enter.
 
 ```
 Open a project › roux-next-gen › setup
@@ -516,7 +521,8 @@ Open a project › roux-next-gen › setup
 ```
 
 **Enter is unchanged.** Setups are opt-in per launch, so the muscle memory that
-already works keeps working, and `esc` comes back with your filter intact. The
+already works keeps working, and `esc` or `shift+tab` comes back with your
+filter intact. The
 list is filtered to what applies to that row, and each row says which of the
 three sources it came from — because two setups with the same name resolve by
 precedence, which is otherwise invisible at exactly the moment you are choosing
@@ -607,7 +613,7 @@ inherited `cwd` and `env`, explicit focus, strict key checking, and `--dry-run`.
 
 ### Bind it
 
-Nothing to bind: `ctrl+t` lives inside the picker you already opened.
+Nothing to bind: `tab` and `ctrl+t` live inside the picker you already opened.
 
 ## Skills
 

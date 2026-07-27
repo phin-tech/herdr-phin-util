@@ -182,3 +182,71 @@ func TestPickerEnterWithoutCtrlTIsUnchanged(t *testing.T) {
 		t.Errorf("picked %q", p.picked.Label)
 	}
 }
+
+// tab means "deeper", and what is deeper depends on the row: a repository has
+// worktrees, a worktree has only the question of how to build it.
+func TestPickerTabOnAWorktreeRowOpensSetups(t *testing.T) {
+	cfg := &config.Settings{Agent: config.AgentSettings{Enabled: true, Kind: "claude"}}
+	wt, git := defaultWorktrees()
+	deps := session.Deps{
+		Worktrees: wt,
+		Git:       git,
+		Setups:    func(string) []setup.Setup { return reviewSetups() },
+	}
+	p := NewPicker(cfg, deps, nil, []session.Candidate{project("acme", "/src/acme")})
+
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
+	if p.level != levelWorktrees {
+		t.Fatal("tab did not descend into the repo")
+	}
+
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
+	if p.level != levelSetups {
+		t.Fatal("tab at the worktree level did not reach the setups")
+	}
+	if !strings.Contains(strings.Join(labels(p.filtered), ","), "pr-review") {
+		t.Errorf("rows = %v", labels(p.filtered))
+	}
+
+	// And shift+tab walks back out the way it came, one level at a time.
+	press(p, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if p.level != levelWorktrees {
+		t.Errorf("shift+tab left the setups for level %v, want the worktrees", p.level)
+	}
+}
+
+// The flagship path: paste a PR, tab, pick the layout. A link row has nothing
+// below it either, so tab used to do nothing there at all.
+func TestPickerTabOnALinkRowOpensSetups(t *testing.T) {
+	p := setupPicker(t, reviewSetups())
+	typeInto(p, "https://github.com/phin-tech/roux/pull/42")
+
+	c, ok := p.selected()
+	if !ok || c.Kind != session.KindLink {
+		t.Fatalf("selected %+v, want the resolved link row", c)
+	}
+
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
+
+	if p.level != levelSetups {
+		t.Fatal("tab on a link row did not reach the setups")
+	}
+	if p.pending.Kind != session.KindLink {
+		t.Errorf("pending = %+v, want the link row held for the setup to apply to", p.pending)
+	}
+}
+
+// An open Space builds nothing, so tab has nowhere to go and says so by not
+// offering itself.
+func TestPickerTabOnASpaceWithNoPathDoesNothing(t *testing.T) {
+	p := setupPicker(t, reviewSetups(), session.Candidate{Kind: session.KindSpace, Label: "scratch"})
+
+	press(p, tea.KeyMsg{Type: tea.KeyTab})
+
+	if p.level != levelProjects {
+		t.Errorf("tab moved to level %v from a Space row", p.level)
+	}
+	if strings.Contains(p.View(), "tab") {
+		t.Errorf("the hint offers tab where it does nothing:\n%s", p.View())
+	}
+}
