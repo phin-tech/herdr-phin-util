@@ -6,6 +6,26 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.4.1 — 2026-07-27
+
+`submit: true` waits for the agent to be promptable ([#4]).
+
+- A submitted prompt was being sent the moment the agent drew its input, which
+  is not the moment Herdr will accept one: `agent.start` leaves the agent
+  `launch_pending`, and `agent.prompt` rejects a pending agent with
+  `agent_not_ready` no matter what the pane shows. Neither check the setup ran
+  saw it -- `agent.wait` answers "idle" for an agent that has not really
+  started, since an agent doing nothing yet looks exactly like one that is
+  done. On a four-pane run this dropped both reviewer prompts.
+- Setups now poll `agent.list` for the flag Herdr actually gates on, and send
+  the prompt once it clears. A retry that fails on readiness re-waits rather
+  than backing off and guessing again.
+- An agent that never finishes launching -- typically one stuck on a first-run
+  prompt of its own, a trust dialog or an upgrade nag -- is reported as
+  "never finished launching" instead of as a bare rejection from the prompt.
+  Only a `submit: true` pane fails over it; a typed prompt goes through
+  `pane.send_text`, which needs no such thing, and still lands.
+
 ## 0.4.0 — 2026-07-27
 
 Agent panes take a command line ([#1], [#2]).
@@ -73,3 +93,4 @@ Setups no longer half-build a Space in silence ([#3]).
 [#1]: https://github.com/phin-tech/herdr-phin-util/issues/1
 [#2]: https://github.com/phin-tech/herdr-phin-util/issues/2
 [#3]: https://github.com/phin-tech/herdr-phin-util/issues/3
+[#4]: https://github.com/phin-tech/herdr-phin-util/issues/4
