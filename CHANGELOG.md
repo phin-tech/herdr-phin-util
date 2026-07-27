@@ -6,6 +6,26 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.4.3 — 2026-07-27
+
+codex is no longer prompted into its first-run screen ([#6]).
+
+- On a first run in a fresh worktree, codex draws an update nag and a "do you
+  trust this directory" prompt before it draws an input. The prompt went out
+  into those screens, `agent.prompt` answered ok because delivery is not
+  verified, and the pane sat there empty with no warning.
+- Measured against a live codex: `launch_pending` clears about three seconds
+  after start, on process detection, with the nag menu still up -- and Herdr's
+  `interactive_ready` reports **true** on both gate screens, so gating on it
+  instead would not have helped. Both screens are also full of `›`, which is
+  codex's menu cursor as much as its input caret.
+- What does distinguish them is the footer codex draws under its input
+  (`<model> · <cwd>`), absent from both gate screens and drawn within a second
+  of the input in every run. codex now waits for that before it is prompted,
+  the way claude already waits for `❯`.
+- A codex that never reaches its input now costs its step loudly -- reported,
+  and the pane labelled `failed:` -- instead of swallowing the prompt.
+
 ## 0.4.2 — 2026-07-27
 
 A name another Space already took no longer leaves a dead pane ([#5]).
@@ -115,3 +135,4 @@ Setups no longer half-build a Space in silence ([#3]).
 [#3]: https://github.com/phin-tech/herdr-phin-util/issues/3
 [#4]: https://github.com/phin-tech/herdr-phin-util/issues/4
 [#5]: https://github.com/phin-tech/herdr-phin-util/issues/5
+[#6]: https://github.com/phin-tech/herdr-phin-util/issues/6
