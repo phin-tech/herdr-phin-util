@@ -20,16 +20,21 @@ type Step struct {
 	// Tab is the index of the tab this pane belongs to, and NewTab marks the
 	// pane that opens it. The first pane of the first tab opens no tab at all:
 	// the Space arrived with one.
-	Tab      int
-	TabName  string
-	NewTab   bool
-	PaneIdx  int
-	Label    string
-	Split    string
-	Ratio    float64
-	Cwd      string
-	Env      map[string]string
-	Agent    string
+	Tab     int
+	TabName string
+	NewTab  bool
+	PaneIdx int
+	Label   string
+	Split   string
+	Ratio   float64
+	Cwd     string
+	Env     map[string]string
+	Agent   string
+	// Args is the agent's whole command line as it will be passed to
+	// agent.start: the model flag, if a model was named, followed by whatever
+	// args the pane spelled out. Resolving them into one list here is what
+	// keeps execution from having to know that model is sugar.
+	Args     []string
 	Prompt   string
 	Submit   bool
 	Command  string
@@ -84,6 +89,10 @@ func (s Setup) Resolve(baseCwd string, data map[string]string) (Plan, error) {
 			if err != nil {
 				return Plan{}, fmt.Errorf("tab %d pane %d command: %w", ti+1, pi+1, err)
 			}
+			args, err := renderAgentArgs(pane, data)
+			if err != nil {
+				return Plan{}, fmt.Errorf("tab %d pane %d args: %w", ti+1, pi+1, err)
+			}
 
 			split := pane.Split
 			if pi > 0 && split == "" {
@@ -102,6 +111,7 @@ func (s Setup) Resolve(baseCwd string, data map[string]string) (Plan, error) {
 				Cwd:      joinCwd(tabCwd, pane.Cwd),
 				Env:      mergeEnv(tabEnv, paneEnv),
 				Agent:    pane.Agent,
+				Args:     args,
 				Prompt:   prompt,
 				Submit:   pane.Submit,
 				Command:  strings.TrimSpace(command),
@@ -138,6 +148,40 @@ func renderPanePrompt(p Pane, data map[string]string) (string, error) {
 		return "", nil
 	}
 	return Render(text, data)
+}
+
+// renderAgentArgs builds the agent's command line: the model flag first, then
+// the pane's own args. Model is deliberately sugar rather than a separate
+// field carried through execution -- "--model opus" is what it always meant,
+// and writing it out here means there is one thing to pass to agent.start
+// instead of two that could disagree about ordering.
+//
+// Args going last is what makes the escape hatch an escape hatch: a pane that
+// needs to say something the sugar cannot can still say it, and says it after.
+// Each value renders as a template, so --add-dir {{.Path}} works.
+func renderAgentArgs(p Pane, data map[string]string) ([]string, error) {
+	if p.Agent == "" || (strings.TrimSpace(p.Model) == "" && len(p.Args) == 0) {
+		return nil, nil
+	}
+
+	var out []string
+	if model := strings.TrimSpace(p.Model); model != "" {
+		rendered, err := Render(model, data)
+		if err != nil {
+			return nil, fmt.Errorf("model: %w", err)
+		}
+		if rendered = strings.TrimSpace(rendered); rendered != "" {
+			out = append(out, "--model", rendered)
+		}
+	}
+	for i, arg := range p.Args {
+		rendered, err := Render(arg, data)
+		if err != nil {
+			return nil, fmt.Errorf("arg %d: %w", i+1, err)
+		}
+		out = append(out, rendered)
+	}
+	return out, nil
 }
 
 // normaliseWait fills in the default timeout, so execution never has to.
@@ -272,6 +316,15 @@ func (p Plan) Describe() []string {
 		}
 		if s.Agent != "" {
 			out = append(out, "    agent   "+s.Agent)
+		}
+		if len(s.Args) > 0 {
+			// Quoted per value: an arg with a space in it is one arg, and a
+			// preview that ran them together would read as several.
+			quoted := make([]string, 0, len(s.Args))
+			for _, a := range s.Args {
+				quoted = append(quoted, fmt.Sprintf("%q", a))
+			}
+			out = append(out, "    args    "+strings.Join(quoted, " "))
 		}
 		if s.Prompt != "" {
 			verb := "type"

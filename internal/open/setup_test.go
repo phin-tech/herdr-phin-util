@@ -560,3 +560,29 @@ func TestWorktreeFallbackToAnExistingWorktreeIsReportedGently(t *testing.T) {
 		t.Errorf("warning claims the source checkout: %q", out.Warnings[0])
 	}
 }
+
+// A pane's model and args are the agent's command line, so they have to reach
+// agent.start -- the whole point of the field is a guardrail the prompt cannot
+// provide.
+func TestApplySetupPassesTheAgentCommandLine(t *testing.T) {
+	s := &fakeSession{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Agent: "claude", Model: "opus", Args: []string{"--permission-mode", "plan"}},
+		{Split: "down", Agent: "codex"},
+	}}}}
+
+	if _, _, _, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.startAgentCalls) != 2 {
+		t.Fatalf("start calls = %+v", s.startAgentCalls)
+	}
+	if got := strings.Join(s.startAgentCalls[0].args, " "); got != "--model opus --permission-mode plan" {
+		t.Errorf("args = %q, want the model flag then the pane's own", got)
+	}
+	// And a pane that asked for neither is started exactly as before: an empty
+	// args is not the same as an absent one for some agent kinds.
+	if s.startAgentCalls[1].args != nil {
+		t.Errorf("args = %v, want nil for a pane that named none", s.startAgentCalls[1].args)
+	}
+}

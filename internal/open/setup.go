@@ -326,7 +326,7 @@ func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID st
 		return fmt.Errorf("tab %q: %q is not an agent Herdr knows", stepTab(step), kind)
 	}
 
-	if err := startAgentWithRetry(s, paneID, setupAgentName(step, index), kind, nil); err != nil {
+	if err := startAgentWithRetry(s, paneID, setupAgentName(step, index), kind, step.Args); err != nil {
 		return fmt.Errorf("start %s in tab %q: %w", kind, stepTab(step), err)
 	}
 	// Nothing is typed into a pane that has not drawn its input yet.

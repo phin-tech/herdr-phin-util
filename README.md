@@ -330,6 +330,8 @@ tabs:
 
       - split: right
         agent: codex
+        model: gpt-5.1-codex-max
+        args: ["--sandbox", "read-only"]
         submit: true
         prompt: Review the diff on {{.Branch}} for correctness bugs.
 
@@ -356,14 +358,22 @@ works for a PR, an issue, a Linear ticket or a plain checkout.
 | neither | a shell at its prompt |
 
 Also per pane: `split` (`right`/`down`), `ratio`, `label`, `cwd`, `env`,
-`focus`, `wait_for`. `cwd` and `env` inherit setup → tab → pane. A tab takes
-`command:` directly instead of `panes:` when it's one command and nothing else,
-and a tab with neither is one plain shell.
+`focus`, `wait_for`, and on an agent pane `model:` and `args:`. `cwd` and `env`
+inherit setup → tab → pane. A tab takes `command:` directly instead of
+`panes:` when it's one command and nothing else, and a tab with neither is one
+plain shell.
 
 - `submit: true` presses Enter. **Omitted means type it and leave it** — read
   the orchestrator's brief before firing it, while the workers are already going.
 - `wait_for: { match: "queued", timeout_ms: 20000 }` holds the rest of the
   layout until that pane's output matches. A timeout isn't fatal.
+- `model: opus` and `args: ["--permission-mode", "plan"]` are the agent's
+  command line: `model` first, then `args` verbatim. This is how a reviewer is
+  made **read-only** — a prompt that says "don't edit anything" is a request,
+  and the diff being reviewed can argue with it; `--permission-mode plan`
+  can't be argued with. Values render as templates, so `--add-dir {{.Path}}`
+  works. Neither is validated: the agent's own rejection of a bad model name
+  beats an allowlist that goes stale.
 - Unknown keys are reported, not ignored.
 
 Narrow which targets a setup offers itself for with `applies_to`, `repos`

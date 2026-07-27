@@ -208,3 +208,55 @@ func TestDescribeCoversWhatAPlanWillDo(t *testing.T) {
 		t.Errorf("Describe() does not say the prompt is only typed:\n%s", out)
 	}
 }
+
+func TestResolveTurnsModelAndArgsIntoOneCommandLine(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{
+		Agent: "claude",
+		Model: "opus",
+		Args:  []string{"--permission-mode", "plan", "--add-dir", "{{.Path}}"},
+	}}}}}
+
+	plan, err := s.Resolve("/repo", map[string]string{"Path": "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"--model", "opus", "--permission-mode", "plan", "--add-dir", "/repo"}
+	got := plan.Steps[0].Args
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+}
+
+// A pane that names neither gets no args at all, rather than an empty list
+// agent.start would have to be taught to ignore.
+func TestResolveLeavesArgsNilWhenNoneAreAsked(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{Agent: "claude"}}}}}
+	plan, err := s.Resolve("/repo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Steps[0].Args != nil {
+		t.Errorf("args = %v, want nil", plan.Steps[0].Args)
+	}
+}
+
+func TestDescribeShowsTheAgentCommandLine(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{
+		Agent: "claude", Model: "opus", Args: []string{"--permission-mode", "plan"},
+	}}}}}
+	plan, err := s.Resolve("/repo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(plan.Describe(), "\n")
+	if !strings.Contains(got, `args    "--model" "opus" "--permission-mode" "plan"`) {
+		t.Errorf("--dry-run does not show the command line:\n%s", got)
+	}
+}

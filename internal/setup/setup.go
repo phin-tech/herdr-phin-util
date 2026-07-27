@@ -83,6 +83,16 @@ type Pane struct {
 
 	// Agent is an agent kind for Herdr to start here.
 	Agent string `yaml:"agent"`
+	// Model is the model to launch that agent with, passed through as
+	// "--model <value>". It is not validated: model names change faster than
+	// this file could keep up with, and the agent's own rejection is a better
+	// error than a stale allowlist's.
+	Model string `yaml:"model"`
+	// Args are extra command-line arguments for the agent, a list rather than
+	// a string so nothing has to be shell-quoted. This is the escape hatch
+	// Model is the ergonomic case of: --permission-mode, --sandbox, --add-dir
+	// and whatever the agent grows next all go here.
+	Args []string `yaml:"args"`
 	// Prompt is a Go text/template rendered against the target.
 	Prompt string `yaml:"prompt"`
 	// Skill is shorthand for a prompt that is just a slash command.
@@ -211,6 +221,12 @@ func (s Setup) Validate() []string {
 			}
 			if pane.Agent == "" && (pane.Prompt != "" || pane.Skill != "" || pane.Submit) {
 				add("%s has a prompt but no agent to type it into", at)
+			}
+			if pane.Agent == "" && pane.Model != "" {
+				add("%s sets a model but has no agent to launch -- a command pane spells its own flags out", at)
+			}
+			if pane.Agent == "" && len(pane.Args) > 0 {
+				add("%s sets args but has no agent to pass them to -- a command pane spells its own flags out", at)
 			}
 			if pane.Prompt != "" && pane.Skill != "" {
 				add("%s has both a prompt and a skill -- use one or the other", at)

@@ -59,6 +59,8 @@ tabs:
       - split: right            # "right" or "down"; relative to the pane above
         ratio: 0.3              # 0 < r < 1; omitted = an even split
         agent: codex
+        model: gpt-5.1-codex-max          # agent panes only
+        args: ["--sandbox", "read-only"]  # extra argv, verbatim, after --model
         submit: true            # send it; omitted = type it and leave it
         prompt: Review {{.Branch}}.
 
@@ -85,6 +87,31 @@ A pane is exactly one of:
 
 `agent` must be a kind Herdr knows: `claude`, `codex`, `gemini`, `cursor`,
 `opencode`, `copilot`, `amp`, `droid`, `pi`, and others.
+
+### model and args
+
+`model:` and `args:` are the agent's command line: `--model <model>` first,
+then `args` verbatim. Both are agent-pane only — a `command:` pane spells its
+own flags out, and setting either there is a load-time problem, not silence.
+
+Neither is validated. Model names change faster than a file like this can keep
+up with, so a bad one is the agent's error to give.
+
+`args` is a **list**, so nothing has to be shell-quoted:
+
+```yaml
+- label: reviewer
+  agent: claude
+  model: opus
+  args: ["--permission-mode", "plan", "--add-dir", "{{.Path}}"]
+```
+
+Values render as templates, same as prompts.
+
+**Use it for a read-only reviewer.** A prompt that says "do not edit anything"
+is a request, and the diff under review can argue with it. `--permission-mode
+plan` (claude) or `--sandbox read-only` (codex) cannot be argued with. If a
+pane must not mutate the repo, put it here, not in the prompt.
 
 ### submit
 
@@ -164,8 +191,13 @@ the usual ones.
 **Validation rejects it.** The rules: a name is required; a tab has `command`
 or `panes`, never both; the first pane of a tab cannot `split`; `split` is only
 `right` or `down`; `ratio` is strictly between 0 and 1; a prompt needs an
-agent; an agent and a command cannot share a pane; only one pane may be
-`focus`.
+agent; `model` and `args` need an agent; an agent and a command cannot share a
+pane; only one pane may be `focus`.
+
+**The agent rejected a flag.** `model` and `args` are passed through
+untouched, so an unknown model name or a flag that kind does not have is that
+agent's own error, visible in the pane. `--dry-run` prints the exact argv under
+`args`.
 
 **The layout builds but a prompt is blank.** A placeholder is misspelled, or
 the field is empty for that target kind. `--dry-run` shows it.

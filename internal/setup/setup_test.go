@@ -171,3 +171,17 @@ func TestFind(t *testing.T) {
 		t.Error("found a setup that does not exist")
 	}
 }
+
+// model and args are the agent's command line, so a pane with no agent has
+// nowhere to put them -- and a command pane spells its own flags out anyway.
+func TestValidateRejectsModelAndArgsWithoutAnAgent(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{
+		{Command: "make", Model: "opus"},
+		{Split: "down", Command: "make", Args: []string{"--flag"}},
+	}}}}
+
+	problems := strings.Join(s.Validate(), "\n")
+	if !strings.Contains(problems, "model") || !strings.Contains(problems, "args") {
+		t.Errorf("problems = %q, want both named", problems)
+	}
+}
