@@ -48,13 +48,13 @@ type fakeSession struct {
 	// takenNames are names another Space is already using, which is what a
 	// second concurrent run of the same setup walks into. StartAgent rejects
 	// them the way Herdr does, with agent_name_taken.
-	takenNames map[string]bool
-	waitCalls               []string
-	waitErr                 error
-	waitOutputCalls         []waitOutputCall
-	waitOutputErr           error
-	sendTextCalls           []sendTextCall
-	sendTextErr             error
+	takenNames      map[string]bool
+	waitCalls       []string
+	waitErr         error
+	waitOutputCalls []waitOutputCall
+	waitOutputErr   error
+	sendTextCalls   []sendTextCall
+	sendTextErr     error
 
 	// launchedAfterCall makes AgentLaunched report "still launching" for every
 	// call before this one (1-indexed), which is how the gap between a rendered
