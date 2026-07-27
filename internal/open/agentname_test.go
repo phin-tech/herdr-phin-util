@@ -2,6 +2,7 @@ package open
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
@@ -88,6 +89,75 @@ func TestAgentNameCollapsesSeparatorRuns(t *testing.T) {
 	}
 	if got := agentName("roux  #  42"); got != "roux-42" {
 		t.Errorf("got %q, want roux-42", got)
+	}
+}
+
+func TestAgentNameInQualifiesBySpace(t *testing.T) {
+	if got := agentNameIn("codex-reviewer-3", "w14"); got != "codex-reviewer-3-w14" {
+		t.Errorf("got %q, want codex-reviewer-3-w14", got)
+	}
+	// Nothing to qualify with, so nothing is invented.
+	if got := agentNameIn("codex-reviewer-3", ""); got != "codex-reviewer-3" {
+		t.Errorf("got %q, want the name unchanged", got)
+	}
+}
+
+// The suffix is the part that makes the name unique, so the 32-character cap
+// comes out of the base -- and the result still has to be a name the server
+// accepts.
+func TestAgentNameInTrimsTheBaseNotTheSuffix(t *testing.T) {
+	got := agentNameIn(agentName("a-really-quite-unreasonably-long-name"), "w14")
+
+	if len(got) > agentNameMaxLen {
+		t.Errorf("got %q (%d chars), want at most %d", got, len(got), agentNameMaxLen)
+	}
+	if !strings.HasSuffix(got, "-w14") {
+		t.Errorf("got %q, want it to keep the -w14 suffix", got)
+	}
+	if !valid.MatchString(got) {
+		t.Errorf("%q would be rejected", got)
+	}
+	if strings.Contains(got, "--") {
+		t.Errorf("got %q, want no separator run where the base was cut", got)
+	}
+}
+
+// A Space id is not promised to be name-safe, and a suffix that made the name
+// invalid would trade one failure for another.
+func TestAgentNameInSanitisesTheSpaceID(t *testing.T) {
+	got := agentNameIn("reviewer", "W 14/b")
+	if got != "reviewer-w-14-b" {
+		t.Errorf("got %q, want reviewer-w-14-b", got)
+	}
+	if !valid.MatchString(got) {
+		t.Errorf("%q would be rejected", got)
+	}
+}
+
+// The single-agent path collides just as readily as a setup does: the same PR
+// opened twice derives the same name from the same label.
+func TestRunRetriesATakenAgentNameQualifiedByTheSpace(t *testing.T) {
+	s := &fakeSession{
+		pane:        herdr.Pane{PaneID: "w14:p1"},
+		workspaceID: "w14",
+		takenNames:  map[string]bool{"scratch-space-1": true},
+	}
+	cfg := &config.Settings{
+		Agent:   config.AgentSettings{Enabled: true, Kind: "claude"},
+		Prompts: config.PromptSettings{Plain: "hello"},
+	}
+
+	if _, err := Run(Deps{Session: s}, cfg, "Scratch Space #1", Options{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(s.startAgentCalls) != 2 {
+		t.Fatalf("agent.start calls = %+v, want 2", s.startAgentCalls)
+	}
+	if got := s.startAgentCalls[1].name; got != "scratch-space-1-w14" {
+		t.Errorf("retried under %q, want scratch-space-1-w14", got)
+	}
+	if len(s.sendTextCalls) != 1 {
+		t.Error("the prompt should still be typed once the agent starts")
 	}
 }
 

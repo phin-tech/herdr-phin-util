@@ -491,6 +491,57 @@ func TestApplySetupAgentNamesAreUniqueAndValid(t *testing.T) {
 	}
 }
 
+// Agent names are global to Herdr, not scoped to a Space, so a setup opened a
+// second time while the first is still up asks for names another Space holds.
+// That must not leave a bare shell where an agent belongs: the name is
+// qualified by this Space and retried.
+func TestApplySetupRetriesATakenAgentNameQualifiedByTheSpace(t *testing.T) {
+	s := &fakeSession{takenNames: map[string]bool{"codex-reviewer-1": true}}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Label: "codex-reviewer", Agent: "codex"},
+	}}}}
+
+	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w14", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems = %v, want none -- the collision is recoverable", problems)
+	}
+	if len(s.startAgentCalls) != 2 {
+		t.Fatalf("StartAgent calls = %+v, want 2 (the taken name, then the qualified one)", s.startAgentCalls)
+	}
+	if got := s.startAgentCalls[1].name; got != "codex-reviewer-1-w14" {
+		t.Errorf("retried under %q, want %q", got, "codex-reviewer-1-w14")
+	}
+	// The label is what a person reads off the pane, and it was never the
+	// thing that collided.
+	if strings.Contains(l.transcript(), "failed:") || !strings.Contains(l.transcript(), "label root codex-reviewer") {
+		t.Errorf("the pane label should be untouched and unfailed:\n%s", l.transcript())
+	}
+}
+
+// A qualified name that is also taken is a real failure: retrying it a third
+// way would just be guessing.
+func TestApplySetupReportsAnAgentNameTakenTwice(t *testing.T) {
+	s := &fakeSession{takenNames: map[string]bool{"codex-reviewer-1": true, "codex-reviewer-1-w14": true}}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Label: "codex-reviewer", Agent: "codex"},
+	}}}}
+
+	_, _, problems, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w14", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "already used") {
+		t.Errorf("problems = %v, want the collision reported", problems)
+	}
+	if len(s.startAgentCalls) != 2 {
+		t.Errorf("StartAgent calls = %d, want 2 -- no third guess", len(s.startAgentCalls))
+	}
+}
+
 // validAgentName mirrors agent.start's rule: lowercase letter first, then
 // lowercase letters, digits, '-' or '_', to 32 characters.
 func validAgentName(name string) bool {

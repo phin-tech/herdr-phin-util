@@ -45,6 +45,10 @@ type fakeSession struct {
 	// every call before this one (1-indexed), then succeed from then on.
 	// Zero disables this and just returns startAgentErr immediately.
 	startAgentBusyUntilCall int
+	// takenNames are names another Space is already using, which is what a
+	// second concurrent run of the same setup walks into. StartAgent rejects
+	// them the way Herdr does, with agent_name_taken.
+	takenNames map[string]bool
 	waitCalls               []string
 	waitErr                 error
 	waitOutputCalls         []waitOutputCall
@@ -103,6 +107,9 @@ func (f *fakeSession) StartAgent(paneID, name, kind string, args []string) error
 	f.startAgentCalls = append(f.startAgentCalls, startAgentCall{paneID, name, kind, args})
 	if f.startAgentBusyUntilCall > 0 && len(f.startAgentCalls) < f.startAgentBusyUntilCall {
 		return &herdr.APIError{Method: "agent.start", Code: "agent_pane_busy", Message: "agent target pane is not an available shell"}
+	}
+	if f.takenNames[name] {
+		return &herdr.APIError{Method: "agent.start", Code: "agent_name_taken", Message: "agent name " + name + " is already used"}
 	}
 	return f.startAgentErr
 }

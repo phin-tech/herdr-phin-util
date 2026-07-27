@@ -70,10 +70,18 @@ var now = time.Now
 // races it, so the busy answer is retried rather than surfaced. Only that one
 // code is retried -- repeating a genuine rejection several times would just
 // slow the failure down.
+//
+// agent_name_taken is the other rejection worth handling rather than
+// surfacing. Agent names are global to Herdr, not scoped to a Space, so two
+// concurrent runs of the same setup -- or the same target opened twice --
+// derive the same name and the second one fails, leaving a bare shell where an
+// agent should be. That is retried too, under a name disambiguated by the
+// Space it is in.
 const (
-	startAgentBusyCode = "agent_pane_busy"
-	startAgentAttempts = 5
-	startAgentBackoff  = 300 * time.Millisecond
+	startAgentBusyCode  = "agent_pane_busy"
+	startAgentTakenCode = "agent_name_taken"
+	startAgentAttempts  = 5
+	startAgentBackoff   = 300 * time.Millisecond
 )
 
 // agent.start validates its name: it must start with a lowercase letter and
@@ -121,17 +129,68 @@ func agentName(label string) string {
 	return name
 }
 
+// agentNameSuffix turns a Space id into something that can be glued onto an
+// agent name. Herdr's ids ("w13") already pass, but nothing promises that, and
+// a suffix that made the name invalid would trade one failure for another.
+func agentNameSuffix(workspaceID string) string {
+	suffix := agentNameInvalid.ReplaceAllString(strings.ToLower(strings.TrimSpace(workspaceID)), "-")
+	return strings.Trim(suffix, "-_")
+}
+
+// agentNameIn disambiguates a name by the Space it belongs to:
+// "codex-reviewer-3" becomes "codex-reviewer-3-w14". The Space id is used
+// rather than a random hash because it is short, unique and still greppable --
+// the name stays something you can read off a pane and match to a window.
+//
+// The length cap is spent on the base, not the suffix: a truncated suffix
+// would not be the thing that makes the name unique. An empty Space id has
+// nothing to disambiguate with, so the name is returned unchanged and the
+// caller's retry is a no-op.
+func agentNameIn(name, workspaceID string) string {
+	suffix := agentNameSuffix(workspaceID)
+	if suffix == "" {
+		return name
+	}
+	if room := agentNameMaxLen - len(suffix) - 1; len(name) > room {
+		if room <= 0 {
+			return name
+		}
+		name = strings.Trim(name[:room], "-_")
+	}
+	if name == "" {
+		name = agentNameFallback
+	}
+	return name + "-" + suffix
+}
+
 // startAgentWithRetry backs off linearly: the pane usually settles within the
 // first interval, and the total budget stays comfortably under the time a
 // person would wait before deciding the keypress did nothing.
-func startAgentWithRetry(s Session, paneID, name, kind string, args []string) error {
+//
+// A name already in use is answered once, with the Space-qualified name, and
+// then given the same busy retries -- the two rejections are independent, and
+// a pane that is both freshly built and colliding should still end up with an
+// agent in it.
+func startAgentWithRetry(s Session, paneID, workspaceID, name, kind string, args []string) error {
+	err := startAgentBusyRetry(s, paneID, name, kind, args)
+	if !isAgentStartCode(err, startAgentTakenCode) {
+		return err
+	}
+	qualified := agentNameIn(name, workspaceID)
+	if qualified == name {
+		return err
+	}
+	return startAgentBusyRetry(s, paneID, qualified, kind, args)
+}
+
+// startAgentBusyRetry is one name's worth of attempts.
+func startAgentBusyRetry(s Session, paneID, name, kind string, args []string) error {
 	var err error
 	for attempt := 1; attempt <= startAgentAttempts; attempt++ {
 		if err = s.StartAgent(paneID, name, kind, args); err == nil {
 			return nil
 		}
-		var apiErr *herdr.APIError
-		if !errors.As(err, &apiErr) || apiErr.Code != startAgentBusyCode {
+		if !isAgentStartCode(err, startAgentBusyCode) {
 			return err
 		}
 		if attempt < startAgentAttempts {
@@ -139,6 +198,13 @@ func startAgentWithRetry(s Session, paneID, name, kind string, args []string) er
 		}
 	}
 	return err
+}
+
+// isAgentStartCode reports whether err is the named rejection from Herdr,
+// rather than a transport failure or a different refusal.
+func isAgentStartCode(err error, code string) bool {
+	var apiErr *herdr.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == code
 }
 
 // PRLookup resolves a pull request's branch and title, and an issue's title.
@@ -473,7 +539,7 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 
 	// No args: every path through here starts a fresh agent, and only the
 	// handoff has a session to resume.
-	if err := startAgentWithRetry(s, paneID, agentName(tgt.Label()), cfg.Agent.Kind, nil); err != nil {
+	if err := startAgentWithRetry(s, paneID, out.WorkspaceID, agentName(tgt.Label()), cfg.Agent.Kind, nil); err != nil {
 		return out, fmt.Errorf("start agent: %w", err)
 	}
 	// Typing into a pane that is still on a startup banner would land in the

@@ -70,7 +70,7 @@ func RunHandoff(deps Deps, opts HandoffOptions) (Outcome, error) {
 	// content -- typing a project template into it would put words in the
 	// mouth of a conversation that is mid-flow.
 	args := []string{"--resume", plan.SessionID}
-	if err := startAgentWithRetry(deps.Session, pane.PaneID, agentName(tgt.Label()), handoffKind, args); err != nil {
+	if err := startAgentWithRetry(deps.Session, pane.PaneID, workspaceID, agentName(tgt.Label()), handoffKind, args); err != nil {
 		return out, fmt.Errorf("start agent: %w", err)
 	}
 	if err := deps.Session.WaitAgentIdle(pane.PaneID); err != nil {

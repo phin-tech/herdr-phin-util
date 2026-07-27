@@ -126,7 +126,7 @@ func applySetup(s Session, l Layout, cfg *config.Settings, def setup.Setup, root
 	}
 
 	panes, problems := buildPanes(l, plan, root, workspaceID)
-	problems = append(problems, fillPanes(s, l, cfg, plan, panes)...)
+	problems = append(problems, fillPanes(s, l, cfg, plan, panes, workspaceID)...)
 
 	// Focus last, once there is nothing left to build that could steal it.
 	// Losing it is cosmetic next to a Space that is otherwise standing.
@@ -202,7 +202,7 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 
 // fillPanes starts what each pane is for, in the order the file listed them,
 // and reports what did not start without holding up what is next.
-func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes []string) []string {
+func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes []string, workspaceID string) []string {
 	var problems []string
 
 	for i, step := range plan.Steps {
@@ -211,7 +211,7 @@ func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes
 			continue
 		}
 
-		if err := fillPane(s, l, cfg, step, paneID, i); err != nil {
+		if err := fillPane(s, l, cfg, step, paneID, i, workspaceID); err != nil {
 			problems = append(problems, err.Error())
 			// The Space itself says which pane did not get what it was for,
 			// so a bare shell is self-explaining rather than a mystery.
@@ -239,7 +239,7 @@ func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes
 
 // fillPane gives one pane the thing it exists for: a command, or an agent and
 // whatever prompt goes with it.
-func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID string, index int) error {
+func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID string, index int, workspaceID string) error {
 	switch {
 	case step.Command != "":
 		if err := l.RunCommand(paneID, step.Command); err != nil {
@@ -247,7 +247,7 @@ func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID
 		}
 
 	case step.Agent != "":
-		if err := startSetupAgent(s, cfg, step, paneID, index, step.Submit); err != nil {
+		if err := startSetupAgent(s, cfg, step, paneID, index, workspaceID, step.Submit); err != nil {
 			return err
 		}
 		if strings.TrimSpace(step.Prompt) == "" {
@@ -327,19 +327,20 @@ func markPaneFailed(l Layout, paneID string, step setup.Step) {
 // startSetupAgent starts one pane's agent and waits for it to be ready to be
 // typed into, reusing the retry and readiness rules the single-agent path
 // already established -- including that agent.start rejects a pane Herdr has
-// only just built.
+// only just built, and that a name another Space already took is retried
+// qualified by this Space's id.
 //
 // needsPrompting says whether the pane's prompt goes through agent.prompt,
 // which has a stricter idea of ready than anything on screen does. Only then is
 // a launch that never completes fatal to the step: a pane that is only being
 // typed into works fine from the moment its input renders.
-func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID string, index int, needsPrompting bool) error {
+func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID string, index int, workspaceID string, needsPrompting bool) error {
 	kind := step.Agent
 	if !config.KnownAgentKind(kind) {
 		return fmt.Errorf("tab %q: %q is not an agent Herdr knows", stepTab(step), kind)
 	}
 
-	if err := startAgentWithRetry(s, paneID, setupAgentName(step, index), kind, step.Args); err != nil {
+	if err := startAgentWithRetry(s, paneID, workspaceID, setupAgentName(step, index), kind, step.Args); err != nil {
 		return fmt.Errorf("start %s in tab %q: %w", kind, stepTab(step), err)
 	}
 	// Nothing is typed into a pane that has not drawn its input yet.
