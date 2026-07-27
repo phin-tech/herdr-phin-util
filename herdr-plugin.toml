@@ -1,6 +1,6 @@
 id = "phin-util"
 name = "Phin Util"
-version = "0.3.1"
+version = "0.3.2"
 min_herdr_version = "0.7.4"
 description = "Small everyday Herdr utilities: promote a pane into its own Space, make a workspace from a pasted link or a YAML setup, and whatever else earns its keep."
 platforms = ["macos", "linux"]
