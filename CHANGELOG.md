@@ -6,6 +6,26 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.4.2 — 2026-07-27
+
+A name another Space already took no longer leaves a dead pane ([#5]).
+
+- Agent names are global to Herdr, not scoped to a Space, and they are derived
+  from the pane's label and its position -- so a second concurrent run of a
+  setup asks for the names the first one is still holding. `agent.start`
+  refused with `agent_name_taken` and that pane stayed a bare shell. The rest
+  of the run was fine, which made it easy to miss.
+- `agent.start` now retries a taken name qualified by the Space it is in:
+  `codex-reviewer-3` becomes `codex-reviewer-3-w14`, the same way a pane that
+  is not ready yet is retried through `agent_pane_busy`. The Space id is used
+  rather than a hash because it stays short and greppable -- the name is still
+  something you can read off a pane and match to a window.
+- Only the internal agent name takes the suffix, and only on a real collision.
+  The pane label is what a person reads, and it was never the thing that
+  collided.
+- The single-agent path gets the same recovery: the same pull request opened
+  twice derives the same name from the same label.
+
 ## 0.4.1 — 2026-07-27
 
 `submit: true` waits for the agent to be promptable ([#4]).
@@ -94,3 +114,4 @@ Setups no longer half-build a Space in silence ([#3]).
 [#2]: https://github.com/phin-tech/herdr-phin-util/issues/2
 [#3]: https://github.com/phin-tech/herdr-phin-util/issues/3
 [#4]: https://github.com/phin-tech/herdr-phin-util/issues/4
+[#5]: https://github.com/phin-tech/herdr-phin-util/issues/5
