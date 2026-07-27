@@ -21,6 +21,7 @@ import (
 	"github.com/phin-tech/herdr-phin-util/internal/config"
 	"github.com/phin-tech/herdr-phin-util/internal/gh"
 	"github.com/phin-tech/herdr-phin-util/internal/herdr"
+	"github.com/phin-tech/herdr-phin-util/internal/setup"
 	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
 
@@ -151,6 +152,10 @@ type Deps struct {
 	Session Session
 	PRs     PRLookup
 	Git     Fetcher
+	// Layout is the extra slice of the API a setup needs: tabs, splits,
+	// commands and focus. Only the setup path uses it, so everything else in
+	// this package works with it nil.
+	Layout Layout
 	// Clone fetches a repository that is not on this machine yet. Only the
 	// clone path uses it, so the rest of the package works with it nil.
 	Clone Cloner
@@ -170,6 +175,10 @@ type Options struct {
 	// it is what the user edited the box to say, so the template does not
 	// get a vote.
 	Prompt string
+	// Setup replaces the single-agent step with a whole layout. It is set
+	// when a setup was picked, and nil for the ordinary path -- which is why
+	// nothing about this package's behaviour changes without one.
+	Setup *setup.Setup
 }
 
 // Outcome reports what Run did.
@@ -185,6 +194,13 @@ type Outcome struct {
 	// PromptSent is the exact text typed into the pane, empty when the agent
 	// step did not run.
 	PromptSent string
+
+	// SetupName is the setup that built the Space, empty for the ordinary
+	// single-agent path.
+	SetupName string
+	// SetupPanes is every pane a setup created, in the order the file listed
+	// them, including the Space's own root pane.
+	SetupPanes []string
 
 	// SessionID is the agent session a handoff resumed. Empty for every other
 	// path through this package, which all start something new.
@@ -256,7 +272,7 @@ func runGitHubPR(deps Deps, cfg *config.Settings, tgt target.Target, opts Option
 		Kind: tgt.Kind, Label: tgt.Label(), Branch: info.Branch, RepoPath: repoPath,
 		WorkspaceID: workspaceID, PaneID: pane.PaneID,
 	}
-	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, promptData(tgt, info.Branch, info.Title), out)
+	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, info.Branch, info.Title), out)
 }
 
 // runGitHubIssue sits between the other two: an issue URL names its own
@@ -299,7 +315,7 @@ func runGitHubIssue(deps Deps, cfg *config.Settings, tgt target.Target, opts Opt
 		Kind: tgt.Kind, Label: tgt.Label(), Branch: branch, RepoPath: repoPath,
 		WorkspaceID: workspaceID, PaneID: pane.PaneID,
 	}
-	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, promptData(tgt, branch, title), out)
+	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, branch, title), out)
 }
 
 func runLinear(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) (Outcome, error) {
@@ -328,7 +344,7 @@ func runLinear(deps Deps, cfg *config.Settings, tgt target.Target, opts Options)
 		Kind: tgt.Kind, Label: tgt.Label(), Branch: branch, RepoPath: deps.Cwd,
 		WorkspaceID: workspaceID, PaneID: pane.PaneID,
 	}
-	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, promptData(tgt, branch, ""), out)
+	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, branch, ""), out)
 }
 
 func runPlain(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) (Outcome, error) {
@@ -338,7 +354,7 @@ func runPlain(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) 
 	}
 
 	out := Outcome{Kind: tgt.Kind, Label: tgt.Label(), RepoPath: deps.Cwd, WorkspaceID: workspaceID, PaneID: pane.PaneID}
-	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, promptData(tgt, "", ""), out)
+	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, "", ""), out)
 }
 
 // createOrOpenWorktree tries to make a new worktree, and falls back to
@@ -359,10 +375,32 @@ func createOrOpenWorktree(s Session, req herdr.WorktreeRequest) (herdr.Pane, str
 	return pane, workspaceID, nil
 }
 
-// runAgentStep starts the configured agent and types (but does not submit)
-// the rendered prompt, when enabled. It is shared by all three target kinds
-// so the toggle and template logic exist in exactly one place.
-func runAgentStep(s Session, cfg *config.Settings, tgt target.Target, opts Options, paneID string, data map[string]string, out Outcome) (Outcome, error) {
+// runAgentStep is the last step of every path through this package: what
+// actually fills the Space that was just made.
+//
+// It is one function rather than four so the toggle, the template and now the
+// setup all behave identically whether the Space came from a pull request, an
+// issue, a Linear ticket or a plain checkout. A setup replaces the
+// single-agent body wholesale -- that substitution living here is why every
+// target kind gained setups at once.
+func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Options, root herdr.Pane, data map[string]string, out Outcome) (Outcome, error) {
+	s := deps.Session
+	paneID := root.PaneID
+
+	if opts.Setup != nil {
+		if deps.Layout == nil {
+			return out, fmt.Errorf("setup %q needs a Herdr session to build panes in", opts.Setup.Name)
+		}
+		plan, panes, err := applySetup(s, deps.Layout, cfg, *opts.Setup, root, out.WorkspaceID, out.RepoPath, data)
+		out.SetupName = plan.Name
+		out.SetupPanes = panes
+		if err != nil {
+			return out, err
+		}
+		out.AgentStarted = setupStartsAnAgent(plan)
+		return out, nil
+	}
+
 	enabled := cfg.Agent.Enabled
 	if opts.Agent != nil {
 		enabled = *opts.Agent

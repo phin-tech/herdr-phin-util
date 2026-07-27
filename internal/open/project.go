@@ -57,5 +57,5 @@ func RunProject(deps Deps, cfg *config.Settings, path string, opts Options) (Out
 	data["Repo"] = name
 	data["Path"] = abs
 
-	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, data, out)
+	return runAgentStep(deps, cfg, tgt, opts, pane, data, out)
 }

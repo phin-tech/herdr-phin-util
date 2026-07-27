@@ -23,6 +23,7 @@ import (
 	"github.com/phin-tech/herdr-phin-util/internal/discovery"
 	"github.com/phin-tech/herdr-phin-util/internal/herdr"
 	"github.com/phin-tech/herdr-phin-util/internal/open"
+	"github.com/phin-tech/herdr-phin-util/internal/setup"
 	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
 
@@ -34,6 +35,10 @@ const (
 	KindSpace Kind = "space"
 	// KindProject is a checkout with no Space. Picking it makes one.
 	KindProject Kind = "project"
+	// KindSetup is a workspace recipe offered for a row that is about to be
+	// opened. It is not a thing to open in its own right -- picking one opens
+	// the row it was offered for, built that way.
+	KindSetup Kind = "setup"
 )
 
 // Candidate is one row in the picker.
@@ -53,6 +58,10 @@ type Candidate struct {
 	// Target is set on a KindLink row: the parsed reference the row came from,
 	// carried through so acting on it needs no second parse.
 	Target target.Target
+	// Setup is set on a KindSetup row: the recipe that row would apply. Nil on
+	// the "default" row, which is the single-agent behaviour the picker has
+	// always had.
+	Setup *setup.Setup
 	// Focused marks the Space the user is looking at right now.
 	Focused bool
 	// Detail is the dimmed secondary text -- the path, or a shape summary for
@@ -76,6 +85,10 @@ type Focuser interface {
 type Deps struct {
 	Herdr Lister
 	Open  open.Deps
+	// Setups reads the workspace recipes that apply to a checkout. Nil means
+	// the setup level offers only "default", which is exactly what a machine
+	// with no setups written should see.
+	Setups SetupLoader
 	// Worktrees and Git are only used once the picker descends into a
 	// repository, so the project level works with both left nil.
 	Worktrees WorktreeLister

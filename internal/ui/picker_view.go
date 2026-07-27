@@ -66,6 +66,15 @@ func (p *Picker) pickerView() string {
 // viewTitle is a breadcrumb, so it is always clear which level esc goes back
 // to and which repository the rows belong to.
 func (p *Picker) viewTitle() string {
+	if p.level == levelSetups {
+		// The breadcrumb names the row the setup will be applied to, since
+		// that is the thing the choice is about.
+		return titleStyle.Render("Open a project") +
+			dimStyle.Render(" › ") +
+			titleStyle.Render(p.pending.Label) +
+			dimStyle.Render(" › ") +
+			titleStyle.Render("setup")
+	}
 	if p.level == levelWorktrees {
 		return titleStyle.Render("Open a project") +
 			dimStyle.Render(" › ") +
@@ -83,6 +92,11 @@ func (p *Picker) countSummary() string {
 	}
 	if p.level == levelWorktrees && len(p.all) == 0 {
 		return "no worktrees or branches found"
+	}
+	if p.level == levelSetups && len(p.all) == 1 {
+		// Only the default row: nothing applies here, which is a different
+		// thing from nothing being defined at all.
+		return "no setups apply to this row"
 	}
 	if len(p.all) == 0 {
 		return "nothing found — check [projects].roots in your config"
@@ -176,6 +190,8 @@ func rowTag(k session.Kind) string {
 		return remoteTagStyle.Render("clone ")
 	case session.KindPrunable:
 		return errStyle.Render("gone  ")
+	case session.KindSetup:
+		return createTagStyle.Render("setup ")
 	default: // KindProject
 		return projectTagStyle.Render("new   ")
 	}
@@ -273,6 +289,11 @@ func (p *Picker) viewAgentToggle() string {
 		box = checkedStyle.Render("[x]")
 	}
 	text := box + " start " + p.cfg.Agent.Kind + " in new spaces"
+	if p.level == levelSetups {
+		// A setup names its own agents per pane, so the one configured kind
+		// is not what will be started.
+		return "  " + box + dimStyle.Render(" the setup decides what runs")
+	}
 	if c, ok := p.selected(); ok && c.Kind == session.KindSpace {
 		// Switching to something already running never starts an agent, so
 		// the toggle would otherwise look like it was being ignored.
@@ -291,9 +312,23 @@ func (p *Picker) viewPickerHint() string {
 	hint := keyStyle.Render("↑↓") + dimStyle.Render(" move  ") +
 		keyStyle.Render("enter") + dimStyle.Render(" open  ")
 
+	if p.level == levelSetups {
+		// Nothing else applies here: the row is already chosen, and this level
+		// only decides how it gets built.
+		return hint +
+			keyStyle.Render("shift+tab") + dimStyle.Render(" back  ") +
+			keyStyle.Render("esc") + dimStyle.Render(" back")
+	}
+
 	// Only advertise the prompt editor where it would do something.
 	if c, ok := p.selected(); ok && startsAnAgent(c) && p.agentOn {
 		hint += keyStyle.Render("ctrl+e") + dimStyle.Render(" prompt  ")
+	}
+
+	// The setup level is offered wherever a row would actually build
+	// something, which is both of the other levels.
+	if c, ok := p.selected(); ok && offersSetups(c) {
+		hint += keyStyle.Render("ctrl+t") + dimStyle.Render(" setup  ")
 	}
 
 	if p.level == levelWorktrees {

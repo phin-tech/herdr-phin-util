@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/phin-tech/herdr-phin-util/internal/plugin"
 	"github.com/phin-tech/herdr-phin-util/internal/promote"
 	"github.com/phin-tech/herdr-phin-util/internal/session"
+	"github.com/phin-tech/herdr-phin-util/internal/setup"
 	"github.com/phin-tech/herdr-phin-util/internal/ui"
 	"github.com/phin-tech/herdr-phin-util/internal/version"
 )
@@ -29,13 +31,15 @@ const usage = `herdr-phin-util -- small Herdr utilities
 
 usage:
   herdr-phin-util open <link-or-text> [--agent|--no-agent] [--prompt TEXT]
+                         [--setup NAME] [--dry-run]
                                        make the workspace a pasted link describes
   herdr-phin-util popup                open the "smart workspace maker" popup
   herdr-phin-util pick                 open the project picker popup
   herdr-phin-util pick-worktree        open the picker inside the current repo
   herdr-phin-util projects             list the checkouts the picker would offer
   herdr-phin-util worktrees            list the current repo's worktrees and branches
-  herdr-phin-util project <dir> [--agent|--no-agent]
+  herdr-phin-util setups [--repo DIR]  list the setups defined for a checkout
+  herdr-phin-util project <dir> [--agent|--no-agent] [--setup NAME] [--dry-run]
                                        open a Space on a checkout
   herdr-phin-util promote [pane_id]    move a pane into a Space of its own
   herdr-phin-util handoff [--session ID] [--label TEXT] [--cwd PATH]
@@ -54,8 +58,15 @@ pick lists the Spaces already open followed by every checkout found under
 second. Right-arrow on a repo descends into its worktrees and branches;
 pick-worktree starts there for the repo you are already in.
 
-projects and worktrees print what each level would offer without opening
-anything, which is the way to check a roots setting or a branch list.
+projects, worktrees and setups print what each level would offer without
+opening anything, which is the way to check a roots setting, a branch list, or
+why a setup is not being offered.
+
+A setup is a YAML recipe -- tabs, panes, agents, prompts and commands -- read
+from setups/ and repos/<repo>/ in the plugin config directory, and from
+.herdr-setups.yaml inside a checkout. --setup applies one to whatever is being
+opened; --dry-run prints what it would build and touches nothing. In the
+picker, ctrl+t opens the setup list for the highlighted row.
 
 handoff is run from a Claude session that started outside Herdr. It opens a
 Space on the same directory and resumes the same conversation there. It is not
@@ -88,6 +99,8 @@ func main() {
 		os.Exit(runPickWorktree())
 	case "worktrees":
 		os.Exit(runWorktrees())
+	case "setups":
+		os.Exit(runSetups(args[1:]))
 	case "project":
 		os.Exit(runProject(args[1:]))
 	case "handoff":
@@ -119,6 +132,8 @@ func runOpen(args []string) int {
 
 	var agentOverride *bool
 	var promptOverride string
+	var setupName string
+	var dryRun bool
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--agent":
@@ -134,6 +149,15 @@ func runOpen(args []string) int {
 				return 2
 			}
 			promptOverride = args[i]
+		case "--setup":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "--setup needs a name")
+				return 2
+			}
+			setupName = args[i]
+		case "--dry-run":
+			dryRun = true
 		default:
 			fmt.Fprintf(os.Stderr, "unknown flag %q\n", args[i])
 			return 2
@@ -149,13 +173,37 @@ func runOpen(args []string) int {
 		fmt.Fprintln(os.Stderr, "config:", p)
 	}
 
+	// Setups are resolved before Herdr is reached: a typo'd name should fail
+	// before anything is built, not after.
+	chosen, err := resolveSetup(cfg, invocationCwd(), setupName)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	if dryRun {
+		if chosen == nil {
+			fmt.Fprintln(os.Stderr, "--dry-run only has something to show with --setup")
+			return 2
+		}
+		// No Herdr client: a preview that needed a session would be useless in
+		// the place you most want one, which is while writing the file.
+		plan, _, err := open.PreviewSetup(previewDeps(), cfg, input, *chosen)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		printPlan(plan)
+		return 0
+	}
+
 	client, err := herdr.New()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
-	out, err := open.Run(openDeps(client), cfg, input, open.Options{Agent: agentOverride, Prompt: promptOverride})
+	out, err := open.Run(openDeps(client), cfg, input, open.Options{Agent: agentOverride, Prompt: promptOverride, Setup: chosen})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		// The agent step runs after the Space exists, so a failure there
@@ -175,9 +223,7 @@ func runOpen(args []string) int {
 	if out.Branch != "" {
 		fmt.Printf("branch: %s\n", out.Branch)
 	}
-	if out.AgentStarted {
-		fmt.Println("agent started; prompt typed and waiting for you to send it")
-	}
+	reportSetupOrAgent(out)
 	_ = client.Notify("Space ready", out.Label)
 	return 0
 }
@@ -225,10 +271,35 @@ func runPopup() int {
 func openDeps(client *herdr.Client) open.Deps {
 	return open.Deps{
 		Session: client,
+		Layout:  client,
 		PRs:     gh.New(),
 		Git:     gitcmd.New(),
 		Clone:   gh.New(),
 		Cwd:     invocationCwd(),
+	}
+}
+
+// previewDeps is openDeps without the Herdr half, for --dry-run. Everything a
+// preview reads -- a PR's branch and title -- comes from gh, not from a
+// session, so it works from a plain terminal.
+func previewDeps() open.Deps {
+	return open.Deps{
+		PRs: gh.New(),
+		Git: gitcmd.New(),
+		Cwd: invocationCwd(),
+	}
+}
+
+// reportSetupOrAgent says what ended up in the Space. A setup and the
+// single-agent path deserve different lines: "prompt typed and waiting" is
+// wrong for a layout where some prompts were sent and some were not.
+func reportSetupOrAgent(out open.Outcome) {
+	if out.SetupName != "" {
+		fmt.Printf("setup %s built %d pane%s\n", out.SetupName, len(out.SetupPanes), plural(len(out.SetupPanes)))
+		return
+	}
+	if out.AgentStarted {
+		fmt.Println("agent started; prompt typed and waiting for you to send it")
 	}
 }
 
@@ -273,7 +344,7 @@ func runPick() int {
 	}
 
 	p := tea.NewProgram(
-		ui.NewPicker(cfg, pickerDeps(client), client, candidates).WithWorkspaces(workspaces),
+		ui.NewPicker(cfg, pickerDeps(client, cfg), client, candidates).WithWorkspaces(workspaces),
 		tea.WithMouseCellMotion(),
 	)
 	final, err := p.Run()
@@ -284,14 +355,17 @@ func runPick() int {
 	return reportPick(client, final.(*ui.Picker))
 }
 
-// pickerDeps wires both levels: Herdr for Spaces and worktrees, git for
-// branches.
-func pickerDeps(client *herdr.Client) session.Deps {
+// pickerDeps wires every level: Herdr for Spaces and worktrees, git for
+// branches, and the config directory for setups.
+func pickerDeps(client *herdr.Client, cfg *config.Settings) session.Deps {
 	return session.Deps{
 		Herdr:     client,
 		Open:      openDeps(client),
 		Worktrees: client,
 		Git:       gitcmd.New(),
+		Setups: func(repoPath string) []setup.Setup {
+			return loadSetups(cfg, repoPath)
+		},
 	}
 }
 
@@ -327,7 +401,7 @@ func runPickWorktree() int {
 	}
 
 	p := tea.NewProgram(
-		ui.NewWorktreePicker(cfg, pickerDeps(client), client, repo, candidates),
+		ui.NewWorktreePicker(cfg, pickerDeps(client, cfg), client, repo, candidates),
 		tea.WithMouseCellMotion(),
 	)
 	final, err := p.Run()
@@ -422,12 +496,14 @@ func runProjects() int {
 // half, same as "open" is for the workspace maker.
 func runProject(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-phin-util project <dir> [--agent|--no-agent]")
+		fmt.Fprintln(os.Stderr, "usage: herdr-phin-util project <dir> [--agent|--no-agent] [--setup NAME] [--dry-run]")
 		return 2
 	}
 	dir := args[0]
 
 	var agentOverride *bool
+	var setupName string
+	var dryRun bool
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--agent":
@@ -436,6 +512,15 @@ func runProject(args []string) int {
 		case "--no-agent":
 			v := false
 			agentOverride = &v
+		case "--setup":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "--setup needs a name")
+				return 2
+			}
+			setupName = args[i]
+		case "--dry-run":
+			dryRun = true
 		default:
 			fmt.Fprintf(os.Stderr, "unknown flag %q\n", args[i])
 			return 2
@@ -451,13 +536,42 @@ func runProject(args []string) int {
 		fmt.Fprintln(os.Stderr, "config:", p)
 	}
 
+	// The checkout being opened is what a setup is looked up against here,
+	// rather than wherever the command was run from.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	chosen, err := resolveSetup(cfg, abs, setupName)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	if dryRun {
+		if chosen == nil {
+			fmt.Fprintln(os.Stderr, "--dry-run only has something to show with --setup")
+			return 2
+		}
+		deps := previewDeps()
+		deps.Cwd = abs
+		plan, _, err := open.PreviewSetup(deps, cfg, filepath.Base(abs), *chosen)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		printPlan(plan)
+		return 0
+	}
+
 	client, err := herdr.New()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
-	out, err := open.RunProject(openDeps(client), cfg, dir, open.Options{Agent: agentOverride})
+	out, err := open.RunProject(openDeps(client), cfg, dir, open.Options{Agent: agentOverride, Setup: chosen})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		// Same split as runOpen: a Space that exists but whose agent step
@@ -472,9 +586,7 @@ func runProject(args []string) int {
 	}
 
 	fmt.Printf("opened %q in Space %s (pane %s)\n", out.Label, out.WorkspaceID, out.PaneID)
-	if out.AgentStarted {
-		fmt.Println("agent started")
-	}
+	reportSetupOrAgent(out)
 	_ = client.Notify("Space ready", out.Label)
 	return 0
 }

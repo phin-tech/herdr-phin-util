@@ -68,14 +68,29 @@ func (c *Client) nextID(method string) string {
 	return fmt.Sprintf("util:%s:%d", method, c.seq.Add(1))
 }
 
+// defaultDeadline bounds an ordinary request. Everything Herdr answers from
+// its own state answers immediately; ten seconds is generous for that and
+// short enough that an unreachable server fails rather than hangs.
+const defaultDeadline = 10 * time.Second
+
 // Request performs one request/response round trip.
 func (c *Client) Request(method string, params any, out any) error {
+	return c.RequestWithin(defaultDeadline, method, params, out)
+}
+
+// RequestWithin is Request with the read deadline raised, for the handful of
+// methods that deliberately block: agent.wait and pane.wait_for_output do not
+// answer until the thing they are waiting for happens, so the connection has
+// to outlive their own timeout_ms rather than the default. Passing a deadline
+// shorter than the method's timeout would turn every slow-but-successful wait
+// into a transport error.
+func (c *Client) RequestWithin(deadline time.Duration, method string, params any, out any) error {
 	conn, err := net.DialTimeout("unix", c.socketPath, 3*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial herdr socket: %w", err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(deadline))
 
 	payload, err := json.Marshal(request{ID: c.nextID(method), Method: method, Params: params})
 	if err != nil {

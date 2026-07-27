@@ -105,7 +105,7 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 	data["Repo"] = filepath.Base(req.RepoRoot)
 	data["Path"] = req.RepoRoot
 
-	return runAgentStep(deps.Session, cfg, tgt, opts, pane.PaneID, data, out)
+	return runAgentStep(deps, cfg, tgt, opts, pane, data, out)
 }
 
 // createWorktreeWithFallback retries with a second base before giving up.

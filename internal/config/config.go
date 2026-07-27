@@ -41,6 +41,13 @@ var validAgentKinds = map[string]bool{
 	"maki": true,
 }
 
+// KnownAgentKind reports whether agent.start would accept a kind. A setup
+// names an agent per pane rather than taking the one configured default, so
+// the same list has to be reachable from outside this package.
+func KnownAgentKind(kind string) bool {
+	return validAgentKinds[kind]
+}
+
 // defaultPrompts render into Go text/template against the target plus
 // resolved extras. They are deliberately short: this is a nudge typed into an
 // agent's input, not a full brief.
@@ -117,6 +124,26 @@ type ProjectSettings struct {
 	Depth int
 }
 
+// SetupSettings says where the workspace recipes live, and which one Enter
+// uses when nothing is picked explicitly.
+//
+// The recipes themselves are YAML -- three levels of nesting carrying
+// multi-line prompts is the one shape TOML renders badly -- but where to find
+// them is per-machine configuration like everything else here, so it stays in
+// config.toml.
+type SetupSettings struct {
+	// Dir holds setups offered for every repository. Relative paths are taken
+	// as relative to the config directory.
+	Dir string
+	// ReposDir holds per-repository directories: repos/<repo>/*.yaml.
+	ReposDir string
+	// RepoFile is the committed file looked for inside a checkout.
+	RepoFile string
+	// Default names a setup to use when a row is opened without one being
+	// picked. Empty keeps today's behaviour: one agent, one prompt.
+	Default string
+}
+
 // Settings is the resolved, validated configuration.
 type Settings struct {
 	// RepoTemplates are tried in order; the first one that exists locally
@@ -129,6 +156,8 @@ type Settings struct {
 	// someone who has already told us where repos live should not have to say
 	// it twice in a different shape.
 	Projects ProjectSettings
+	// Setups is where the workspace recipes are looked for.
+	Setups SetupSettings
 	// WorktreePath is the raw configured template for where a worktree is
 	// created, or empty when unset. Placeholders: {host}, {owner}, {repo},
 	// {repo_root}, {branch}. Empty means "let Herdr choose", which is the
@@ -169,6 +198,12 @@ type rawConfig struct {
 		GitOnly *bool `toml:"git_only"`
 		Depth   *int  `toml:"depth"`
 	} `toml:"projects"`
+	Setups struct {
+		Dir      string `toml:"dir"`
+		ReposDir string `toml:"repos_dir"`
+		RepoFile string `toml:"repo_file"`
+		Default  string `toml:"default"`
+	} `toml:"setups"`
 	Worktrees struct {
 		Path string `toml:"path"`
 	} `toml:"worktrees"`
@@ -278,6 +313,13 @@ func LoadFrom(dir string) (*Settings, error) {
 		s.Projects.Roots = raw.Projects.Roots
 	} else {
 		s.Projects.Roots = deriveProjectRoots(s.RepoTemplates)
+	}
+
+	s.Setups = SetupSettings{
+		Dir:      raw.Setups.Dir,
+		ReposDir: raw.Setups.ReposDir,
+		RepoFile: raw.Setups.RepoFile,
+		Default:  raw.Setups.Default,
 	}
 
 	s.WorktreePath = raw.Worktrees.Path
@@ -406,3 +448,7 @@ func (s *Settings) ResolveWorktreePath(t target.Target, repoRoot, branch string)
 	}
 	return expandTemplate(s.WorktreePath, t, extra), true
 }
+
+// AgentKind is the configured agent kind, as a method so a package that only
+// needs to name it does not have to import the whole Settings shape.
+func (s *Settings) AgentKind() string { return s.Agent.Kind }

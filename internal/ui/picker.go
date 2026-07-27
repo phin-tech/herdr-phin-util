@@ -22,6 +22,11 @@ const (
 	levelProjects level = iota
 	// levelWorktrees is one repository's worktrees and branches.
 	levelWorktrees
+	// levelSetups is the recipes that apply to one highlighted row. Unlike the
+	// other two it is not a level of the same tree -- it is a question about
+	// the row you were already on, which is why it is reached with its own key
+	// rather than by descending.
+	levelSetups
 )
 
 // Picker is the project picker popup: type to narrow, Enter to go.
@@ -49,6 +54,14 @@ type Picker struct {
 	projectAll    []session.Candidate
 	projectFilter string
 	projectCursor int
+
+	// saved is the level ctrl+t interrupted, restored on the way back. The
+	// setup level can be entered from either of the other two, so unlike the
+	// descent it cannot assume where it came from.
+	saved *savedLevel
+	// pending is the row a picked setup will be applied to. The setup rows
+	// themselves are not things to open.
+	pending session.Candidate
 
 	// workspaces is kept so a pasted link can be matched against the open
 	// Spaces by label without another round trip.
@@ -150,10 +163,84 @@ func NewWorktreePicker(cfg *config.Settings, deps session.Deps, focuser session.
 
 // filterPlaceholder names what the current level is a list of.
 func filterPlaceholder(l level) string {
-	if l == levelWorktrees {
+	switch l {
+	case levelWorktrees:
 		return "filter branches, or type a new branch name"
+	case levelSetups:
+		return "filter setups"
+	default:
+		return "filter, or paste a PR / issue / Linear link"
 	}
-	return "filter, or paste a PR / issue / Linear link"
+}
+
+// savedLevel is everything the setup level has to put back when it closes.
+type savedLevel struct {
+	level  level
+	all    []session.Candidate
+	filter string
+	cursor int
+	offset int
+	link   bool
+}
+
+// enterSetups opens the setup list for the highlighted row.
+//
+// The rows are read from disk on the spot rather than off the UI loop: it is a
+// handful of small files in a directory, and a level that appeared a beat
+// after the key was pressed would feel worse than one that costs a stat.
+func (p *Picker) enterSetups() {
+	c, ok := p.selected()
+	if !ok || !offersSetups(c) {
+		return
+	}
+
+	rows := session.SetupRows(p.deps.Setups, p.cfg, c)
+
+	p.saved = &savedLevel{
+		level:  p.level,
+		all:    p.all,
+		filter: p.filter.Value(),
+		cursor: p.cursor,
+		offset: p.offset,
+		link:   p.linkMode,
+	}
+	p.pending = c
+	p.level = levelSetups
+	p.all = rows
+	p.err = nil
+	p.status = ""
+	p.filter.Placeholder = filterPlaceholder(levelSetups)
+	p.filter.SetValue("")
+	p.applyFilter()
+}
+
+// leaveSetups puts back the level ctrl+t was pressed on, filter and selection
+// intact -- the same contract ascend has, for the same reason: a level you can
+// back out of losing nothing is one you will try.
+func (p *Picker) leaveSetups() {
+	if p.saved == nil {
+		return
+	}
+	s := p.saved
+	p.saved = nil
+	p.pending = session.Candidate{}
+	p.level = s.level
+	p.all = s.all
+	p.filter.Placeholder = filterPlaceholder(s.level)
+	p.err = nil
+	p.status = ""
+	p.filter.SetValue(s.filter)
+	p.applyFilter()
+	p.linkMode = s.link
+	p.cursor = s.cursor
+	p.offset = s.offset
+	p.clampCursor()
+}
+
+// offersSetups reports whether a row is one a setup could be applied to.
+// Switching to a Space builds nothing, so there is no layout to choose.
+func offersSetups(c session.Candidate) bool {
+	return startsAnAgent(c)
 }
 
 // canDescend reports whether a row has a repository behind it to look into.
@@ -397,11 +484,21 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+e":
 		return p, p.toggleEditor()
 
+	case "ctrl+t":
+		if p.level != levelSetups {
+			p.enterSetups()
+		}
+		return p, nil
+
 	case "esc":
 		// Inside a repository, esc is "back" rather than "quit". Backing out
 		// one level at a time is what makes descending safe to try -- unless
 		// this level is where the picker started, in which case there is
 		// nothing underneath and esc means what it usually does.
+		if p.level == levelSetups {
+			p.leaveSetups()
+			return p, nil
+		}
 		if p.level == levelWorktrees && p.rootLevel != levelWorktrees {
 			p.ascend()
 			return p, nil
@@ -424,6 +521,10 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 
 	case "shift+tab":
+		if p.level == levelSetups {
+			p.leaveSetups()
+			return p, nil
+		}
 		if p.level == levelWorktrees && p.rootLevel != levelWorktrees {
 			p.ascend()
 		}
@@ -630,13 +731,25 @@ func (p *Picker) submit() tea.Cmd {
 		return nil
 	}
 
+	agent := p.agentOn
+	opts := open.Options{Agent: &agent}
+
+	// A setup row is not a thing to open. It answers "how", and the row it was
+	// offered for -- held in pending since ctrl+t -- is still the "what".
+	level := p.level
+	if candidate.Kind == session.KindSetup {
+		opts.Setup = candidate.Setup
+		candidate = p.pending
+		if p.saved != nil {
+			level = p.saved.level
+		}
+	}
+
 	p.running = true
 	p.err = nil
 	p.picked = candidate
 	p.status = statusFor(candidate)
 
-	agent := p.agentOn
-	opts := open.Options{Agent: &agent}
 	if p.promptEdited {
 		// Edited text wins outright over the template, the same rule the
 		// workspace maker follows.
@@ -647,7 +760,7 @@ func (p *Picker) submit() tea.Cmd {
 	cfg := p.cfg
 	repo := p.repo
 
-	if p.level == levelWorktrees && candidate.Kind != session.KindSpace {
+	if level == levelWorktrees && candidate.Kind != session.KindSpace {
 		// A Space is a Space at either level, so focusing stays with the
 		// project-level dispatch; everything else here is worktree-shaped.
 		return func() tea.Msg {

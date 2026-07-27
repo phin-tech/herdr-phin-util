@@ -1,6 +1,10 @@
 package herdr
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Pane is one entry from a pane.list snapshot.
 type Pane struct {
@@ -246,6 +250,195 @@ func (c *Client) CreateWorkspace(cwd, label string, focus bool) (Pane, string, e
 	return res.RootPane, res.Workspace.WorkspaceID, nil
 }
 
+// CreateTab adds a tab to an existing workspace and returns its root pane.
+//
+// focus is false for every tab a setup builds after the first: the tabs behind
+// it are being filled in, and having the front of the Space change under
+// someone while that happens is worse than arriving on tab one.
+func (c *Client) CreateTab(workspaceID, cwd, label string, env map[string]string, focus bool) (Pane, string, error) {
+	params := map[string]any{"focus": focus}
+	if workspaceID != "" {
+		params["workspace_id"] = workspaceID
+	}
+	if cwd != "" {
+		params["cwd"] = cwd
+	}
+	if label != "" {
+		params["label"] = label
+	}
+	if len(env) > 0 {
+		params["env"] = env
+	}
+	var res struct {
+		Tab struct {
+			TabID string `json:"tab_id"`
+		} `json:"tab"`
+		RootPane Pane `json:"root_pane"`
+	}
+	if err := c.Request("tab.create", params, &res); err != nil {
+		return Pane{}, "", err
+	}
+	return res.RootPane, res.Tab.TabID, nil
+}
+
+// SplitPane splits an existing pane and returns the new one. direction is
+// "right" or "down"; ratio is the new pane's share of the space, and is
+// omitted when zero so Herdr's own even split applies.
+func (c *Client) SplitPane(targetPaneID, direction string, ratio float64, cwd string, env map[string]string, focus bool) (Pane, error) {
+	params := map[string]any{
+		"target_pane_id": targetPaneID,
+		"direction":      direction,
+		"focus":          focus,
+	}
+	if ratio > 0 {
+		params["ratio"] = ratio
+	}
+	if cwd != "" {
+		params["cwd"] = cwd
+	}
+	if len(env) > 0 {
+		params["env"] = env
+	}
+	var res struct {
+		Pane Pane `json:"pane"`
+	}
+	if err := c.Request("pane.split", params, &res); err != nil {
+		return Pane{}, err
+	}
+	return res.Pane, nil
+}
+
+// FocusPane brings one pane to the foreground, including switching to its tab.
+func (c *Client) FocusPane(paneID string) error {
+	return c.Request("pane.focus", map[string]any{"pane_id": paneID}, nil)
+}
+
+// RenamePane sets the label shown on a pane's border.
+func (c *Client) RenamePane(paneID, label string) error {
+	return c.Request("pane.rename", map[string]any{
+		"pane_id": paneID,
+		"label":   label,
+	}, nil)
+}
+
+// RenameTab sets a tab's label. A freshly created Space's root tab is named
+// "1", so the first tab of a setup renames it rather than making a second one.
+func (c *Client) RenameTab(tabID, label string) error {
+	return c.Request("tab.rename", map[string]any{
+		"tab_id": tabID,
+		"label":  label,
+	}, nil)
+}
+
+// ReadPane returns what a pane currently shows. source is "visible" for the
+// on-screen rows or "recent" for recent scrollback.
+func (c *Client) ReadPane(paneID, source string, lines int) (string, error) {
+	var res struct {
+		Read struct {
+			Text string `json:"text"`
+		} `json:"read"`
+	}
+	err := c.Request("pane.read", map[string]any{
+		"pane_id": paneID,
+		"source":  source,
+		"lines":   lines,
+	}, &res)
+	if err != nil {
+		return "", err
+	}
+	return res.Read.Text, nil
+}
+
+// SendKeys presses real keys in a pane, by Herdr's key names ("Enter").
+//
+// This is how a command gets submitted. A trailing "\n" inside SendText would
+// not do it: send_text is a paste, and zsh's line editor inserts an embedded
+// newline literally instead of running the line, leaving the command sitting
+// at the prompt. Only a real key event submits.
+func (c *Client) SendKeys(paneID string, keys ...string) error {
+	return c.Request("pane.send_keys", map[string]any{
+		"pane_id": paneID,
+		"keys":    keys,
+	}, nil)
+}
+
+// Command pacing. A pane exists before its shell does, and a shell exists
+// before its line editor is ready, so a command typed into a fresh pane can be
+// dropped in either gap. Both waits are best effort: on timeout the command is
+// sent anyway, so an unusual shell degrades to the blind behaviour rather than
+// hanging the whole layout.
+const (
+	shellReadyTimeout = 5 * time.Second
+	commandEchoWait   = 5 * time.Second
+	pacePollInterval  = 50 * time.Millisecond
+	// echoProbeLen keeps the "did my typing land" probe on one terminal row. A
+	// long command wraps, and a wrapped string never matches the rendered
+	// screen, so only a short leading fragment is looked for.
+	echoProbeLen = 12
+)
+
+// RunCommand types a command into a pane and submits it with a real Enter.
+//
+// Adapted from herdr-plus's runCommand, which learned both of these the hard
+// way: wait for the shell to draw a prompt before typing, then wait for the
+// typing to echo before pressing Enter. Skipping either races a freshly
+// spawned shell and the command is silently lost.
+func (c *Client) RunCommand(paneID, command string) error {
+	c.waitForPaneReady(paneID)
+	if err := c.SendText(paneID, command); err != nil {
+		return err
+	}
+	c.waitForPaneText(paneID, echoProbe(command))
+	return c.SendKeys(paneID, "Enter")
+}
+
+// echoProbe is a short, stable fragment of a command to look for on screen.
+func echoProbe(command string) string {
+	probe := command
+	if i := strings.IndexByte(probe, '\n'); i >= 0 {
+		probe = probe[:i]
+	}
+	if len(probe) > echoProbeLen {
+		probe = probe[:echoProbeLen]
+	}
+	return strings.TrimSpace(probe)
+}
+
+// waitForPaneReady blocks until a pane shows anything at all, which for a
+// fresh pane means its shell has printed a prompt.
+func (c *Client) waitForPaneReady(paneID string) {
+	deadline := time.Now().Add(shellReadyTimeout)
+	for time.Now().Before(deadline) {
+		if text, err := c.ReadPane(paneID, "visible", 5); err == nil && strings.TrimSpace(text) != "" {
+			return
+		}
+		time.Sleep(pacePollInterval)
+	}
+}
+
+// waitForPaneText blocks until probe appears on screen, or the wait elapses.
+func (c *Client) waitForPaneText(paneID, probe string) {
+	if probe == "" {
+		return
+	}
+	deadline := time.Now().Add(commandEchoWait)
+	for time.Now().Before(deadline) {
+		if text, err := c.ReadPane(paneID, "visible", 20); err == nil && strings.Contains(text, probe) {
+			return
+		}
+		time.Sleep(pacePollInterval)
+	}
+}
+
+// PromptAgent submits text to an agent -- Enter included, unlike SendText.
+// It is what a setup's `submit: true` pane gets.
+func (c *Client) PromptAgent(paneID, text string) error {
+	return c.Request("agent.prompt", map[string]any{
+		"target": paneID,
+		"text":   text,
+	}, nil)
+}
+
 // agentIdleTimeoutMs bounds how long WaitAgentIdle waits for an agent to
 // finish starting up and settle, before giving up. Some agents are slow to
 // initialize; this sits comfortably under agent.wait's own 300000ms ceiling.
@@ -271,11 +464,20 @@ func (c *Client) StartAgent(paneID, name, kind string, args []string) error {
 // prompt before that would land on a startup banner instead of the agent's
 // actual input.
 func (c *Client) WaitAgentIdle(paneID string) error {
-	return c.Request("agent.wait", map[string]any{
+	return c.RequestWithin(waitDeadline(agentIdleTimeoutMs), "agent.wait", map[string]any{
 		"target":     paneID,
 		"until":      []string{"idle"},
 		"timeout_ms": agentIdleTimeoutMs,
 	}, nil)
+}
+
+// waitDeadline is how long to hold the connection open for a method that
+// blocks server-side for timeout_ms. The slack is for the server noticing its
+// own timeout and writing the answer back: without it the transport would give
+// up a moment before the reply that says "timed out" arrives, and a clean
+// timeout would surface as a connection error instead.
+func waitDeadline(timeoutMs int) time.Duration {
+	return time.Duration(timeoutMs)*time.Millisecond + defaultDeadline
 }
 
 // WaitPaneOutput blocks until value appears in the pane's current on-screen
@@ -284,7 +486,7 @@ func (c *Client) WaitAgentIdle(paneID string) error {
 // report idle during a brief startup lull, before the agent has drawn
 // anything a person would call ready.
 func (c *Client) WaitPaneOutput(paneID, value string, timeoutMs int) error {
-	return c.Request("pane.wait_for_output", map[string]any{
+	return c.RequestWithin(waitDeadline(timeoutMs), "pane.wait_for_output", map[string]any{
 		"pane_id":    paneID,
 		"source":     "visible",
 		"match":      map[string]any{"type": "substring", "value": value},

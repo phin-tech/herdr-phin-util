@@ -453,6 +453,176 @@ command = "phin-util.pick-worktree"
 description = "Open a worktree"
 ```
 
+## Setups
+
+Everything above ends the same way: one agent, one prompt, one pane. A setup
+replaces that last step with a whole room.
+
+The case it exists for: paste a PR and get an orchestrating agent, a second
+opinion from a different model, and `roborev` already running on the branch —
+laid out, prompted, and in one keystroke.
+
+```yaml
+name: pr-review
+description: orchestrator + second opinion + roborev
+applies_to: [github_pr]
+
+tabs:
+  - name: review
+    panes:
+      - label: orchestrator
+        agent: claude
+        focus: true
+        prompt: |
+          Review PR #{{.Number}} — {{.Title}}
+          {{.URL}}
+          Two other panes are already working on this. Reconcile them.
+
+      - split: right
+        agent: codex
+        submit: true
+        prompt: Review the diff on {{.Branch}} for correctness bugs.
+
+      - split: down
+        ratio: 0.3
+        label: roborev
+        command: roborev review --branch
+
+  - name: tests
+```
+
+A setup is a **recipe applied to a target**, not a workspace of its own. The
+worktree, the branch and the label are already decided by the time one runs —
+which is why `{{.Number}}` and `{{.Branch}}` mean exactly what they mean in
+`[agent.prompts]`, and why the same file works for a PR, an issue, a Linear
+ticket or a plain checkout.
+
+It is the only YAML here. Three levels of nesting carrying multi-line prompts
+is the one shape TOML renders badly: `[[tabs.panes]]` five times describes a
+layout without ever looking like one, and indentation does. `config.toml` is
+unchanged.
+
+### Pick one
+
+`ctrl+t` in the project picker, on any row that would actually build
+something:
+
+```
+Open a project › roux-next-gen › setup
+
+▸ setup   default      one claude, prompt typed not sent
+  setup   pr-review    orchestrator + second opinion + roborev — generic
+  setup   dev          agent, a test loop, and the plugin log — repo
+```
+
+**Enter is unchanged.** Setups are opt-in per launch, so the muscle memory that
+already works keeps working, and `esc` comes back with your filter intact. The
+list is filtered to what applies to that row, and each row says which of the
+three sources it came from — because two setups with the same name resolve by
+precedence, which is otherwise invisible at exactly the moment you are choosing
+between them.
+
+### Where they live
+
+```
+~/.config/herdr/plugins/config/phin-util/
+  setups/pr-review.yaml                  generic — offered for any repo
+  repos/roux-next-gen/dev.yaml           this machine's, for one repo
+  repos/phin-tech/roux/pr-review.yaml    same, disambiguated by owner
+<checkout>/.herdr-setups.yaml            committed, travels to every worktree
+```
+
+`repos/<repo>/` is the everyday case: layouts that only make sense for one
+checkout, without putting a file in the repository. Files there need no `repos:`
+key — the path already says it — and are not offered anywhere else.
+
+`.herdr-setups.yaml` is for a layout the team shares. It holds a `setups:` list
+rather than one per file, since a repo should not grow a directory for this.
+There is one in this repo, as an example.
+
+**When the same name appears twice:** `setups/` < the checkout file < `repos/`.
+Generic is weakest and your own machine's repo directory is strongest, so a
+team setup can be overridden locally without editing a tracked file — the same
+reason `config.toml` is per-machine.
+
+A setup narrows itself with `applies_to` (target kinds), `repos` (globs over
+`owner/repo`), and `branches` (globs). That last one is how "worktree-specific"
+is said: a worktree is a branch.
+
+### What a pane can be
+
+| | |
+| --- | --- |
+| `agent:` + `prompt:` | starts an agent and types the rendered template |
+| `agent:` + `skill:` | shorthand for a prompt that is one slash command |
+| `command:` | runs it in a plain shell |
+| neither | a shell, sitting at its prompt |
+
+`submit: true` sends the prompt with Enter. **Omitted means type it and leave
+it**, which is what the rest of the plugin does — the point of an orchestrator
+pane is that you read its brief before firing it, while the workers it
+coordinates are already going.
+
+Also per pane: `split` (`right`/`down`), `ratio`, `label`, `cwd`, `env`,
+`focus`, and `wait_for`. `cwd` and `env` inherit down setup → tab → pane, so
+one pane in `./web` needs no repeated path.
+
+`wait_for: { match: "queued", timeout_ms: 20000 }` holds the rest of the layout
+until that pane's output matches. It is the ordering primitive — "prompt the
+orchestrator only once roborev has actually queued" is a statement rather than
+a race. A timeout is not fatal: the pane exists and the command ran, and a
+wrong guess at the match should not strand a Space you can already see.
+
+Unknown keys are reported rather than ignored. A typo'd `prompt_` silently
+doing nothing is the failure this kind of file dies of, and YAML is forgiving
+enough to make it likely.
+
+### Check one before you run it
+
+```sh
+bin/herdr-phin-util setups                  # what is defined, and where from
+bin/herdr-phin-util setups --repo ~/src/x   # as if that checkout were the row
+bin/herdr-phin-util open <PR> --setup pr-review --dry-run
+bin/herdr-phin-util open <PR> --setup pr-review
+bin/herdr-phin-util project ~/src/x --setup dev
+```
+
+`--dry-run` prints every tab, split, cwd and rendered prompt — with the PR's
+real number, title and branch, since it asks `gh` the same questions the real
+run does — and touches nothing. It needs no Herdr session, which is the point:
+it works in the place you most want it, which is while writing the file.
+
+`setups` is the counterpart to `projects`: when a setup is not being offered,
+it says whether it failed to load or simply did not match.
+
+Panes are all created before anything runs in one, and focus is decided last.
+Splitting a tab after a TUI has started in it resizes a running program.
+
+Setups take their shape from
+[herdr-plus](https://github.com/cloudmanic/herdr-plus)'s projects — tabs,
+panes, splits, one file per definition, and its rule that the first tab reuses
+the Space's own — and their model from
+[herdr-spreader](https://github.com/yuk1ty/herdr-spreader): ratios, `wait_for`,
+inherited `cwd` and `env`, explicit focus, strict key checking, and `--dry-run`.
+
+### Bind it
+
+Nothing to bind: `ctrl+t` lives inside the picker you already opened.
+
+## Skills
+
+`skills/` holds two Claude Code skills, installable straight from this repo:
+
+```sh
+npx skills add phin-tech/herdr-phin-util
+```
+
+- **herdr-setups** — writing and debugging a setup file. The schema, the three
+  sources, and the dry-run loop, so "make me a review layout for this repo"
+  produces something that actually loads.
+- **herdr-phin-util** — driving the CLI: opening links, picking projects,
+  promoting panes, handing a session in.
+
 ## Layout
 
 One binary with a subcommand per feature, so a new utility does not mean a new
@@ -469,8 +639,10 @@ internal/gh/           PR lookup, shelling out to the gh CLI
 internal/gitcmd/       branches, the default branch, and fetching; shelling out to git
 internal/open/         the new-Space decision, behind interfaces for the same reason
 internal/discovery/    finding checkouts under the configured roots; filesystem only
+internal/setup/        the YAML recipes: load, match, and resolve into ordered steps
 internal/session/      the picker's decision: focus what exists, create what does not
 internal/ui/           the popups, built on internal/open and internal/session
+skills/                Claude Code skills, installable with npx skills add
 ```
 
 The CLI and the popup are two front ends onto one decision layer, so there is
@@ -479,6 +651,14 @@ no second copy of the rules to drift. Each feature is one such layer:
 `internal/session` builds on `internal/open` rather than beside it, so a Space
 made from a picked project goes through the same agent step as one made from a
 PR.
+
+Setups follow the same split, one layer further in. `internal/setup` is pure --
+files in, an ordered list of resolved steps out, with no socket and no network
+-- so precedence, inheritance and matching are testable without a session.
+Carrying those steps out lives in `internal/open`, next to the agent-start
+retry and readiness rules it has to reuse. That is also what makes `--dry-run`
+honest: the preview prints the same resolved plan the real run walks, rather
+than a second derivation of it that could disagree.
 
 A few things about the API that are easy to get wrong, and are why the code
 looks the way it does:

@@ -1,0 +1,16 @@
+# Setups committed with the repo, so every checkout and worktree of it has
+# them. This file is the "shared" source: setups/ and repos/ in the plugin
+# config directory are per-machine, this one travels.
+setups:
+  - name: verify
+    description: the check this repo expects before a push
+    tabs:
+      - name: verify
+        panes:
+          - agent: claude
+            focus: true
+            prompt: |
+              Run go test ./... and go vet ./... in the pane beside you, then
+              fix whatever fails. Do not commit.
+          - split: right
+            command: go test ./... && go vet ./...
