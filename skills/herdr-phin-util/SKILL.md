@@ -93,6 +93,12 @@ defined and where each came from.
 For writing or debugging those files, use the **herdr-setups** skill, which
 covers the schema, the three source directories and their precedence.
 
+A pane that fails does not stop the rest of the layout: each failure prints a
+`warning:` line and renames that pane `failed: <label>`, and the command exits
+non-zero with the Space still standing. The same applies to a worktree that
+could not be created — the fallback is named, loudly when it lands on the
+source checkout rather than a worktree.
+
 ## config.toml
 
 ```toml

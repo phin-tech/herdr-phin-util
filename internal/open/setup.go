@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
 	"github.com/phin-tech/herdr-phin-util/internal/herdr"
@@ -108,46 +109,56 @@ type Layout interface {
 // running program, and a layout that visibly assembles itself before anything
 // starts is also the one that looks deliberate rather than sequential.
 //
-// A failure leaves what was already built standing. A half-built Space that
-// names the pane it stopped at is debuggable; tearing down something the user
-// can already see would be worse than either.
-func applySetup(s Session, l Layout, cfg *config.Settings, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, error) {
+// Panes are independent, so a step that fails is reported and skipped rather
+// than ending the run: one agent that would not start is no reason for the
+// three panes after it to be left as bare shells. The problems come back as a
+// list for the caller to surface -- an error return would say the whole thing
+// failed, which is exactly the thing that was hardest to diagnose about a
+// half-built Space. Only a plan that cannot be resolved at all is an error,
+// since then nothing has been built to report on.
+func applySetup(s Session, l Layout, cfg *config.Settings, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
 	plan, err := def.Resolve(cwd, data)
 	if err != nil {
-		return setup.Plan{}, nil, fmt.Errorf("setup %q: %w", def.Name, err)
+		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
 	}
 	if len(plan.Steps) == 0 {
-		return plan, nil, nil
+		return plan, nil, nil, nil
 	}
 
-	panes, err := buildPanes(l, plan, root, workspaceID)
-	if err != nil {
-		return plan, panes, err
-	}
-	if err := fillPanes(s, l, cfg, plan, panes); err != nil {
-		return plan, panes, err
-	}
+	panes, problems := buildPanes(l, plan, root, workspaceID)
+	problems = append(problems, fillPanes(s, l, cfg, plan, panes)...)
 
 	// Focus last, once there is nothing left to build that could steal it.
+	// Losing it is cosmetic next to a Space that is otherwise standing.
 	if focus := plan.FocusStep; focus < len(panes) && panes[focus] != "" {
-		if err := l.FocusPane(panes[focus]); err != nil {
-			// Cosmetic next to a Space that is otherwise fully built.
-			return plan, panes, nil
-		}
+		_ = l.FocusPane(panes[focus])
 	}
-	return plan, panes, nil
+	return plan, panes, problems, nil
 }
 
-// buildPanes creates every tab and pane, returning one pane id per step.
-func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) ([]string, error) {
+// buildPanes creates every tab and pane, returning one pane id per step -- an
+// empty one for a step whose pane could not be made -- and what went wrong.
+func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) ([]string, []string) {
 	panes := make([]string, len(plan.Steps))
+	var problems []string
 
 	// prev is the pane the next split targets: a split is relative to the pane
 	// before it, which is what makes a list of panes read like the layout it
-	// produces. A new tab resets it to that tab's own root pane.
+	// produces. A new tab resets it to that tab's own root pane. A failed
+	// split leaves it alone, so the next pane in the tab chains off the last
+	// one that does exist rather than off nothing.
 	prev := root.PaneID
 
+	// abandoned is a tab whose own pane could not be created. Its splits would
+	// target the previous tab's pane instead, quietly putting panes in a tab
+	// the file never asked for, so the rest of that tab is skipped.
+	abandoned := -1
+
 	for i, step := range plan.Steps {
+		if step.Tab == abandoned {
+			continue
+		}
+
 		switch {
 		case step.FirstTab && step.PaneIdx == 0:
 			// The Space arrived with a tab and a pane. Using them is not just an
@@ -155,7 +166,8 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 			// sitting there empty.
 			if step.TabName != "" && root.TabID != "" {
 				if err := l.RenameTab(root.TabID, step.TabName); err != nil {
-					return panes, fmt.Errorf("name the first tab %q: %w", step.TabName, err)
+					// A name is decoration; the pane underneath it is fine.
+					problems = append(problems, fmt.Sprintf("name the first tab %q: %v", step.TabName, err))
 				}
 			}
 			panes[i] = root.PaneID
@@ -163,7 +175,9 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 		case step.NewTab:
 			pane, _, err := l.CreateTab(workspaceID, step.Cwd, step.TabName, step.Env, false)
 			if err != nil {
-				return panes, fmt.Errorf("create tab %q: %w", stepTab(step), err)
+				problems = append(problems, fmt.Sprintf("create tab %q: %v", stepTab(step), err))
+				abandoned = step.Tab
+				continue
 			}
 			panes[i] = pane.PaneID
 			prev = pane.PaneID
@@ -171,7 +185,8 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 		default:
 			pane, err := l.SplitPane(prev, step.Split, step.Ratio, step.Cwd, step.Env, false)
 			if err != nil {
-				return panes, fmt.Errorf("split pane %d of tab %q: %w", step.PaneIdx+1, stepTab(step), err)
+				problems = append(problems, fmt.Sprintf("split pane %d of tab %q: %v", step.PaneIdx+1, stepTab(step), err))
+				continue
 			}
 			panes[i] = pane.PaneID
 			prev = pane.PaneID
@@ -182,37 +197,29 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 			_ = l.RenamePane(panes[i], step.Label)
 		}
 	}
-	return panes, nil
+	return panes, problems
 }
 
-// fillPanes starts what each pane is for, in the order the file listed them.
-func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes []string) error {
+// fillPanes starts what each pane is for, in the order the file listed them,
+// and reports what did not start without holding up what is next.
+func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes []string) []string {
+	var problems []string
+
 	for i, step := range plan.Steps {
 		paneID := panes[i]
 		if paneID == "" {
 			continue
 		}
 
-		switch {
-		case step.Command != "":
-			if err := l.RunCommand(paneID, step.Command); err != nil {
-				return fmt.Errorf("run %q in tab %q: %w", step.Command, stepTab(step), err)
-			}
-
-		case step.Agent != "":
-			if err := startSetupAgent(s, cfg, step, paneID, i); err != nil {
-				return err
-			}
-			if strings.TrimSpace(step.Prompt) == "" {
-				break
-			}
-			if step.Submit {
-				if err := l.PromptAgent(paneID, step.Prompt); err != nil {
-					return fmt.Errorf("send the prompt to %s in tab %q: %w", step.Agent, stepTab(step), err)
-				}
-			} else if err := s.SendText(paneID, step.Prompt); err != nil {
-				return fmt.Errorf("type the prompt into %s in tab %q: %w", step.Agent, stepTab(step), err)
-			}
+		if err := fillPane(s, l, cfg, step, paneID, i); err != nil {
+			problems = append(problems, err.Error())
+			// The Space itself says which pane did not get what it was for,
+			// so a bare shell is self-explaining rather than a mystery.
+			markPaneFailed(l, paneID, step)
+			// And nothing is waited for: what the wait was listening for is
+			// the work that just failed to start, so this would be the full
+			// timeout spent to learn what is already known.
+			continue
 		}
 
 		// The wait runs after the pane has been given its work, since what it
@@ -227,7 +234,86 @@ func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes
 			_ = s.WaitPaneOutput(paneID, step.WaitFor.Match, step.WaitFor.TimeoutMs)
 		}
 	}
+	return problems
+}
+
+// fillPane gives one pane the thing it exists for: a command, or an agent and
+// whatever prompt goes with it.
+func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID string, index int) error {
+	switch {
+	case step.Command != "":
+		if err := l.RunCommand(paneID, step.Command); err != nil {
+			return fmt.Errorf("run %q in tab %q: %w", step.Command, stepTab(step), err)
+		}
+
+	case step.Agent != "":
+		if err := startSetupAgent(s, cfg, step, paneID, index); err != nil {
+			return err
+		}
+		if strings.TrimSpace(step.Prompt) == "" {
+			return nil
+		}
+		return sendSetupPrompt(s, l, step, paneID)
+	}
 	return nil
+}
+
+// Prompt pacing. The readiness checks in startSetupAgent are a good guess at
+// "ready to be typed into", not a guarantee: they answer the moment a marker
+// renders, and an agent that has just drawn its input can still be a beat
+// away from accepting one. A settle and a single retry cover that beat, which
+// is cheaper than either racing it or waiting a fixed long time for every
+// pane.
+const (
+	promptSettle       = 400 * time.Millisecond
+	promptRetryBackoff = 1500 * time.Millisecond
+)
+
+// sendSetupPrompt types a pane's prompt, or sends it for a submit:true pane.
+func sendSetupPrompt(s Session, l Layout, step setup.Step, paneID string) error {
+	send := func() error {
+		if step.Submit {
+			return l.PromptAgent(paneID, step.Prompt)
+		}
+		return s.SendText(paneID, step.Prompt)
+	}
+
+	sleep(promptSettle)
+	err := send()
+	if err == nil {
+		return nil
+	}
+	sleep(promptRetryBackoff)
+	if retryErr := send(); retryErr == nil {
+		return nil
+	}
+
+	// The first error is the one reported: a retry that fails the same way
+	// adds nothing, and one that fails differently is usually failing on the
+	// state the first attempt left behind.
+	verb := "type the prompt into"
+	if step.Submit {
+		verb = "send the prompt to"
+	}
+	return fmt.Errorf("%s %s in tab %q: %w", verb, step.Agent, stepTab(step), err)
+}
+
+// markPaneFailed renames a pane that did not get what it was for. It is the
+// per-pane status the Space can show without anywhere to put a message: a
+// pane labelled "failed: codex-reviewer" beside three working ones says in
+// the terminal what a log line only says in a file.
+func markPaneFailed(l Layout, paneID string, step setup.Step) {
+	label := step.Label
+	if label == "" {
+		label = step.TabName
+	}
+	if label == "" {
+		label = step.Agent
+	}
+	if label == "" {
+		label = "pane"
+	}
+	_ = l.RenamePane(paneID, "failed: "+label)
 }
 
 // startSetupAgent starts one pane's agent and waits for it to be ready to be

@@ -403,6 +403,20 @@ herdr-phin-util project ~/src/x --setup dev
 number, title and branch, and touches nothing. It needs no Herdr session, which
 is the point — it works while you're writing the file.
 
+### When a pane doesn't come up
+
+Panes are independent, so a step that fails is reported and skipped rather than
+ending the run: an agent that won't start is no reason for the three panes
+after it to be left as bare shells. Each failure gets a `warning:` line naming
+the tab and the cause, the pane itself is renamed `failed: <label>` so the
+Space says which one it was, and the command exits non-zero.
+
+The same goes for the worktree. If `worktree.create` fails and the Space falls
+back to an existing worktree, you get a line saying so; if it falls back to the
+*source checkout*, you get a louder one, because that Space is sitting on
+whatever branch the checkout has rather than the one you asked for — a PR
+review setup that quietly reviews `main` is worse than one that failed.
+
 Shape borrowed from [herdr-plus](https://github.com/cloudmanic/herdr-plus)'s
 projects; model from [herdr-spreader](https://github.com/yuk1ty/herdr-spreader).
 
@@ -566,6 +580,17 @@ Herdr API gotchas that shaped the code:
 - `agent.start` can reject a pane with `agent_pane_busy` in the instant after
   `worktree.create`/`workspace.create` returns it. Retried with a short linear
   backoff (`startAgentWithRetry`); other errors aren't.
+- `worktree.create` failing and `worktree.open` succeeding does **not** mean
+  you got the worktree: open can land on the source checkout, which looks
+  identical from the API and is a different branch. Compare the returned pane's
+  cwd against the request's (`landedOnSourceCheckout`).
+- The pane a worktree Space comes back with is in the **worktree**; the repo
+  path the plugin resolved is the **checkout it was cut from**. A setup's tabs
+  and splits take their cwd from the former (`spaceCwd`) — using the latter
+  builds a PR review that reviews `main`.
+- `agent.prompt` can answer `agent_not_ready` right after every readiness check
+  has passed — codex sitting on an update prompt does it. Settled and retried
+  once (`sendSetupPrompt`), then reported.
 - `workspace.list` reports no **cwd** — it's recovered from the panes inside,
   which is why the picker calls `pane.list` too. Without that join there's no
   way to tell an open Space and a discovered checkout are the same thing.

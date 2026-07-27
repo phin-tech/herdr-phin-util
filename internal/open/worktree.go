@@ -80,12 +80,13 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 	var (
 		pane        herdr.Pane
 		workspaceID string
+		warnings    []string
 		err         error
 	)
 	if req.Existing {
 		pane, workspaceID, err = deps.Session.OpenWorktree(hreq)
 	} else {
-		pane, workspaceID, err = createWorktreeWithFallback(deps.Session, hreq, req.FallbackBase)
+		pane, workspaceID, warnings, err = createWorktreeWithFallback(deps.Session, hreq, req.FallbackBase)
 	}
 	if err != nil {
 		return Outcome{}, err
@@ -99,6 +100,7 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 		RepoPath:    req.RepoRoot,
 		WorkspaceID: workspaceID,
 		PaneID:      pane.PaneID,
+		Warnings:    warnings,
 	}
 
 	data := promptData(tgt, req.Branch, "")
@@ -114,22 +116,22 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 // not resolve at all when it has not -- or when the repository has no remote.
 // Retrying with the plain local branch turns that from a failure into a
 // slightly staler starting point, which is the better of the two.
-func createWorktreeWithFallback(s Session, req herdr.WorktreeRequest, fallbackBase string) (herdr.Pane, string, error) {
-	pane, workspaceID, err := createOrOpenWorktree(s, req)
+func createWorktreeWithFallback(s Session, req herdr.WorktreeRequest, fallbackBase string) (herdr.Pane, string, []string, error) {
+	pane, workspaceID, warnings, err := createOrOpenWorktree(s, req)
 	if err == nil {
-		return pane, workspaceID, nil
+		return pane, workspaceID, warnings, nil
 	}
 	if fallbackBase == "" || fallbackBase == req.Base {
-		return herdr.Pane{}, "", err
+		return herdr.Pane{}, "", nil, err
 	}
 
 	retry := req
 	retry.Base = fallbackBase
-	pane, workspaceID, retryErr := createOrOpenWorktree(s, retry)
+	pane, workspaceID, warnings, retryErr := createOrOpenWorktree(s, retry)
 	if retryErr != nil {
 		// The first error is the informative one: it names the base that was
 		// actually asked for.
-		return herdr.Pane{}, "", err
+		return herdr.Pane{}, "", nil, err
 	}
-	return pane, workspaceID, nil
+	return pane, workspaceID, warnings, nil
 }

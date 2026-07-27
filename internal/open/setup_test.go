@@ -3,10 +3,12 @@ package open
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
+	"github.com/phin-tech/herdr-phin-util/internal/gh"
 	"github.com/phin-tech/herdr-phin-util/internal/herdr"
 	"github.com/phin-tech/herdr-phin-util/internal/setup"
 	"github.com/phin-tech/herdr-phin-util/internal/target"
@@ -22,6 +24,10 @@ type fakeLayout struct {
 	splitErr     error
 	runErr       error
 	promptErr    error
+	// promptErrUntilCall makes PromptAgent fail for every call before this
+	// one, which is how a prompt that lands only on the retry is expressed.
+	promptErrUntilCall int
+	promptCalls        int
 
 	nextPane int
 }
@@ -55,6 +61,10 @@ func (f *fakeLayout) RunCommand(paneID, command string) error {
 
 func (f *fakeLayout) PromptAgent(paneID, text string) error {
 	f.calls = append(f.calls, fmt.Sprintf("prompt %s %s", paneID, text))
+	f.promptCalls++
+	if f.promptCalls < f.promptErrUntilCall {
+		return errors.New("agent is not accepting input yet")
+	}
 	return f.promptErr
 }
 
@@ -98,9 +108,12 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 	l := &fakeLayout{}
 	cfg := &config.Settings{}
 
-	plan, panes, err := applySetup(s, l, cfg, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"})
+	plan, panes, problems, err := applySetup(s, l, cfg, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"})
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
 	}
 
 	if plan.Name != "pr-review" {
@@ -140,7 +153,7 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 // has started in it resizes a running program.
 func TestApplySetupCreatesEveryPaneBeforeFillingAny(t *testing.T) {
 	l := &fakeLayout{}
-	if _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,7 +177,7 @@ func TestApplySetupTypesUnsubmittedPromptsAndSendsSubmittedOnes(t *testing.T) {
 	s := &fakeSession{}
 	l := &fakeLayout{}
 
-	if _, _, err := applySetup(s, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
+	if _, _, _, err := applySetup(s, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -188,7 +201,7 @@ func TestApplySetupWaitsBeforeContinuing(t *testing.T) {
 	s := &fakeSession{}
 	l := &fakeLayout{}
 
-	if _, _, err := applySetup(s, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(s, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -214,7 +227,7 @@ func TestApplySetupWaitTimeoutIsNotFatal(t *testing.T) {
 		{Split: "down", Command: "echo done"},
 	}}}}
 
-	if _, _, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatalf("a wait timeout aborted the layout: %v", err)
 	}
 	if !strings.Contains(l.transcript(), "echo done") {
@@ -229,7 +242,7 @@ func TestApplySetupFocusesTheMarkedPane(t *testing.T) {
 		{Split: "down", Focus: true},
 	}}}}
 
-	_, panes, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, panes, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +257,7 @@ func TestApplySetupFocusesTheFirstPaneWhenNoneIsMarked(t *testing.T) {
 	l := &fakeLayout{}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{{}, {Split: "down"}}}}}
 
-	if _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if last := l.calls[len(l.calls)-1]; last != "focus root" {
@@ -255,27 +268,127 @@ func TestApplySetupFocusesTheFirstPaneWhenNoneIsMarked(t *testing.T) {
 func TestApplySetupRejectsAnUnknownAgentKind(t *testing.T) {
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{{Agent: "clod"}}}}}
 
-	_, _, err := applySetup(&fakeSession{}, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
-	if err == nil || !strings.Contains(err.Error(), "clod") {
-		t.Errorf("err = %v, want it to name the agent Herdr does not know", err)
+	_, _, problems, err := applySetup(&fakeSession{}, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "clod") {
+		t.Errorf("problems = %v, want one naming the agent Herdr does not know", problems)
 	}
 }
 
-// A failure names where it stopped and leaves the rest standing, rather than
-// tearing down a Space the user can already see.
+// A failed step names where it happened and leaves the rest standing, rather
+// than tearing down a Space the user can already see.
 func TestApplySetupFailureNamesTheTab(t *testing.T) {
 	l := &fakeLayout{splitErr: errors.New("no room")}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{{}, {Split: "down"}}}}}
 
-	_, panes, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
-	if err == nil {
-		t.Fatal("expected an error")
+	_, panes, problems, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
 	}
-	if !strings.Contains(err.Error(), "review") || !strings.Contains(err.Error(), "no room") {
-		t.Errorf("err = %v, want the tab and the cause", err)
+	if len(problems) != 1 {
+		t.Fatalf("problems = %v, want one", problems)
+	}
+	if !strings.Contains(problems[0], "review") || !strings.Contains(problems[0], "no room") {
+		t.Errorf("problem = %q, want the tab and the cause", problems[0])
 	}
 	if panes[0] != "root" {
 		t.Errorf("panes = %v, want what was built before the failure", panes)
+	}
+}
+
+// The defect this whole shape exists for: one pane that will not start is not
+// a reason for the panes after it to be left as bare shells.
+func TestApplySetupCarriesOnPastAFailedPane(t *testing.T) {
+	s := &fakeSession{startAgentErr: errors.New("agent would not start")}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Label: "reviewer", Agent: "claude", Prompt: "review it", Submit: true},
+		{Split: "down", Label: "checks", Command: "roborev review-branch"},
+	}}}}
+
+	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "agent would not start") {
+		t.Errorf("problems = %v, want the one failure named", problems)
+	}
+
+	got := l.transcript()
+	if !strings.Contains(got, "roborev review-branch") {
+		t.Errorf("the pane after the failed one never ran:\n%s", got)
+	}
+	// And the Space says which pane it was, rather than leaving a bare shell
+	// under a label that claims it is fine.
+	if !strings.Contains(got, "label root failed: reviewer") {
+		t.Errorf("the failed pane was not marked:\n%s", got)
+	}
+}
+
+// A tab that could not be created takes its own panes with it: splitting on
+// the previous tab's pane would put them in a tab the file never asked for.
+func TestApplySetupSkipsTheRestOfATabItCouldNotCreate(t *testing.T) {
+	l := &fakeLayout{createTabErr: errors.New("no tab")}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "first", Panes: []setup.Pane{{Command: "one"}}},
+		{Name: "second", Panes: []setup.Pane{{Command: "two"}, {Split: "down", Command: "three"}}},
+	}}
+
+	_, _, problems, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "second") {
+		t.Errorf("problems = %v, want the one tab named once", problems)
+	}
+
+	got := l.transcript()
+	if !strings.Contains(got, "run root one") {
+		t.Errorf("the tab before the failure did not run:\n%s", got)
+	}
+	if strings.Contains(got, "three") {
+		t.Errorf("a pane of the abandoned tab was built anyway:\n%s", got)
+	}
+}
+
+// A wait_for on a pane whose work never started is skipped: what it listens
+// for is that work, so it could only ever spend its whole timeout.
+func TestApplySetupSkipsTheWaitOfAFailedPane(t *testing.T) {
+	s := &fakeSession{}
+	l := &fakeLayout{runErr: errors.New("no shell")}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Command: "roborev", WaitFor: &setup.WaitFor{Match: "queued", TimeoutMs: 30000}},
+	}}}}
+
+	if _, _, _, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range s.waitOutputCalls {
+		if call.value == "queued" {
+			t.Errorf("waited on a pane whose command never ran: %+v", s.waitOutputCalls)
+		}
+	}
+}
+
+// A prompt that does not land first time gets one more go: the readiness
+// checks are a good guess at "ready to be typed into", not a guarantee.
+func TestApplySetupRetriesAPromptOnce(t *testing.T) {
+	l := &fakeLayout{promptErrUntilCall: 2}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Agent: "claude", Prompt: "review it", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want the retry to have covered it", problems)
+	}
+	if strings.Count(l.transcript(), "prompt root review it") != 2 {
+		t.Errorf("want two attempts:\n%s", l.transcript())
 	}
 }
 
@@ -287,7 +400,7 @@ func TestApplySetupAgentNamesAreUniqueAndValid(t *testing.T) {
 		{Split: "down", Label: "Worker #2!", Agent: "claude"},
 	}}}}
 
-	if _, _, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,7 +445,7 @@ func TestApplySetupInheritsTheSpaceDirectory(t *testing.T) {
 		{Name: "b", Cwd: "docs"},
 	}}
 
-	if _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,5 +479,84 @@ func TestRunAgentStepWithoutASetupIsUnchanged(t *testing.T) {
 	}
 	if !out.AgentStarted || out.PromptSent != "scratch" {
 		t.Errorf("outcome = %+v, want the ordinary single-agent result", out)
+	}
+}
+
+// The panes of a worktree Space belong in the worktree, not in the checkout it
+// was cut from. Building them in the source checkout is how a pull-request
+// review setup ends up reviewing main.
+func TestApplySetupBuildsInTheWorktreeNotTheSourceCheckout(t *testing.T) {
+	repo, cfg := existingRepo(t)
+	worktree := filepath.Join(t.TempDir(), "worktrees", "fix-thing")
+
+	sess := &fakeSession{pane: herdr.Pane{PaneID: "wZ:p1", TabID: "wZ:t1", Cwd: worktree}, workspaceID: "wZ"}
+	l := &fakeLayout{}
+	prs := &fakePRLookup{info: gh.PRInfo{Branch: "fix-thing", Title: "Fix the thing"}}
+
+	def := reviewSetup()
+	out, err := Run(Deps{Session: sess, Layout: l, PRs: prs, Git: &fakeFetcher{}}, cfg,
+		"https://github.com/phin-tech/herdr-phin-util/pull/42", Options{Setup: &def})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", out.Warnings)
+	}
+
+	got := l.transcript()
+	if !strings.Contains(got, "cwd="+worktree) {
+		t.Errorf("panes were not built in the worktree %s:\n%s", worktree, got)
+	}
+	if strings.Contains(got, "cwd="+repo) {
+		t.Errorf("a pane was built in the source checkout %s:\n%s", repo, got)
+	}
+}
+
+// worktree.create failing and worktree.open landing on the source checkout is
+// the silent degradation: the Space looks right and is on the wrong branch.
+func TestWorktreeFallbackToTheSourceCheckoutIsReported(t *testing.T) {
+	repo, cfg := existingRepo(t)
+	sess := &fakeSession{
+		createWorktreeErr: errors.New("branch is already checked out"),
+		pane:              herdr.Pane{PaneID: "wZ:p1", Cwd: repo},
+		workspaceID:       "wZ",
+	}
+
+	out, err := Run(Deps{Session: sess, PRs: &fakePRLookup{info: gh.PRInfo{Branch: "fix-thing"}}, Git: &fakeFetcher{}}, cfg,
+		"https://github.com/phin-tech/herdr-phin-util/pull/42", Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(out.Warnings) != 1 {
+		t.Fatalf("warnings = %v, want one", out.Warnings)
+	}
+	for _, want := range []string{"already checked out", repo, "fix-thing"} {
+		if !strings.Contains(out.Warnings[0], want) {
+			t.Errorf("warning %q does not mention %q", out.Warnings[0], want)
+		}
+	}
+}
+
+// Reusing a worktree that already exists is the good outcome of the same
+// fallback, and still worth a line -- but it must not read as the bad one.
+func TestWorktreeFallbackToAnExistingWorktreeIsReportedGently(t *testing.T) {
+	repo, cfg := existingRepo(t)
+	worktree := filepath.Join(t.TempDir(), "fix-thing")
+	sess := &fakeSession{
+		createWorktreeErr: errors.New("worktree already exists"),
+		pane:              herdr.Pane{PaneID: "wZ:p1", Cwd: worktree},
+		workspaceID:       "wZ",
+	}
+
+	out, err := Run(Deps{Session: sess, PRs: &fakePRLookup{info: gh.PRInfo{Branch: "fix-thing"}}, Git: &fakeFetcher{}}, cfg,
+		"https://github.com/phin-tech/herdr-phin-util/pull/42", Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "reused the worktree") {
+		t.Errorf("warnings = %v, want the reuse said plainly", out.Warnings)
+	}
+	if strings.Contains(out.Warnings[0], repo) {
+		t.Errorf("warning claims the source checkout: %q", out.Warnings[0])
 	}
 }

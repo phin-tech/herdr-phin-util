@@ -12,6 +12,7 @@ package open
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -202,6 +203,14 @@ type Outcome struct {
 	// them, including the Space's own root pane.
 	SetupPanes []string
 
+	// Warnings are the things that went wrong without stopping the run: a
+	// worktree that fell back to something other than what was asked for, a
+	// pane whose agent never started, a prompt that was never sent. The Space
+	// exists either way, which is exactly why these have to be said out loud
+	// -- a half-built Space that reports success is the failure that costs
+	// the most to work out afterwards.
+	Warnings []string
+
 	// SessionID is the agent session a handoff resumed. Empty for every other
 	// path through this package, which all start something new.
 	SessionID string
@@ -263,14 +272,14 @@ func runGitHubPR(deps Deps, cfg *config.Settings, tgt target.Target, opts Option
 		Focus: true,
 	}
 
-	pane, workspaceID, err := createOrOpenWorktree(deps.Session, req)
+	pane, workspaceID, warnings, err := createOrOpenWorktree(deps.Session, req)
 	if err != nil {
 		return Outcome{}, err
 	}
 
 	out := Outcome{
 		Kind: tgt.Kind, Label: tgt.Label(), Branch: info.Branch, RepoPath: repoPath,
-		WorkspaceID: workspaceID, PaneID: pane.PaneID,
+		WorkspaceID: workspaceID, PaneID: pane.PaneID, Warnings: warnings,
 	}
 	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, info.Branch, info.Title), out)
 }
@@ -306,14 +315,14 @@ func runGitHubIssue(deps Deps, cfg *config.Settings, tgt target.Target, opts Opt
 		Focus: true,
 	}
 
-	pane, workspaceID, err := createOrOpenWorktree(deps.Session, req)
+	pane, workspaceID, warnings, err := createOrOpenWorktree(deps.Session, req)
 	if err != nil {
 		return Outcome{}, err
 	}
 
 	out := Outcome{
 		Kind: tgt.Kind, Label: tgt.Label(), Branch: branch, RepoPath: repoPath,
-		WorkspaceID: workspaceID, PaneID: pane.PaneID,
+		WorkspaceID: workspaceID, PaneID: pane.PaneID, Warnings: warnings,
 	}
 	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, branch, title), out)
 }
@@ -335,14 +344,14 @@ func runLinear(deps Deps, cfg *config.Settings, tgt target.Target, opts Options)
 		Focus: true,
 	}
 
-	pane, workspaceID, err := createOrOpenWorktree(deps.Session, req)
+	pane, workspaceID, warnings, err := createOrOpenWorktree(deps.Session, req)
 	if err != nil {
 		return Outcome{}, err
 	}
 
 	out := Outcome{
 		Kind: tgt.Kind, Label: tgt.Label(), Branch: branch, RepoPath: deps.Cwd,
-		WorkspaceID: workspaceID, PaneID: pane.PaneID,
+		WorkspaceID: workspaceID, PaneID: pane.PaneID, Warnings: warnings,
 	}
 	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, branch, ""), out)
 }
@@ -361,18 +370,64 @@ func runPlain(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) 
 // opening an existing one. worktree.create fails when the branch is already
 // checked out somewhere; worktree.open is exactly the escape hatch for that,
 // so a create failure is the trigger to try it rather than giving up.
-func createOrOpenWorktree(s Session, req herdr.WorktreeRequest) (herdr.Pane, string, error) {
+//
+// The fallback is reported rather than swallowed. Reusing a worktree that
+// already exists is the good case and still worth a line -- but worktree.open
+// can also land on the source checkout, which is a different branch than the
+// one that was asked for, and a Space that quietly reviews main instead of
+// the pull request is worse than one that failed outright.
+func createOrOpenWorktree(s Session, req herdr.WorktreeRequest) (herdr.Pane, string, []string, error) {
 	pane, workspaceID, err := s.CreateWorktree(req)
 	if err == nil {
-		return pane, workspaceID, nil
+		return pane, workspaceID, nil, nil
 	}
 	createErr := err
 
 	pane, workspaceID, err = s.OpenWorktree(req)
 	if err != nil {
-		return herdr.Pane{}, "", fmt.Errorf("create worktree: %w; open worktree: %v", createErr, err)
+		return herdr.Pane{}, "", nil, fmt.Errorf("create worktree: %w; open worktree: %v", createErr, err)
 	}
-	return pane, workspaceID, nil
+	return pane, workspaceID, worktreeFallbackWarnings(req, pane, createErr), nil
+}
+
+// worktreeFallbackWarnings says what falling back to worktree.open actually
+// produced, in the terms someone reading it cares about: which branch the
+// panes are on, not which call failed.
+func worktreeFallbackWarnings(req herdr.WorktreeRequest, pane herdr.Pane, createErr error) []string {
+	if landedOnSourceCheckout(req, pane) {
+		return []string{fmt.Sprintf(
+			"worktree.create failed (%v), so this Space opened on the source checkout at %s rather than a worktree for %s -- whatever runs here is not looking at that branch",
+			createErr, pane.Cwd, req.Branch)}
+	}
+	return []string{fmt.Sprintf(
+		"worktree.create failed (%v); reused the worktree already on disk instead", createErr)}
+}
+
+// landedOnSourceCheckout reports the degradation worth shouting about: the
+// Space's own directory is the checkout the worktree was to be cut from, so
+// it is on whatever branch that checkout happens to have.
+//
+// A Herdr that reports no cwd is taken at its word rather than guessed at:
+// claiming the wrong branch would be its own kind of wrong.
+func landedOnSourceCheckout(req herdr.WorktreeRequest, pane herdr.Pane) bool {
+	if pane.Cwd == "" || req.Cwd == "" {
+		return false
+	}
+	return filepath.Clean(pane.Cwd) == filepath.Clean(req.Cwd)
+}
+
+// spaceCwd is the directory a setup's tabs and splits are built in.
+//
+// It is the Space's own root pane's directory, not the checkout the Space was
+// derived from: for a worktree target those are different, and using the
+// checkout would put every tab and split of a pull-request layout on the
+// source branch while the root pane sat in the worktree. RepoPath is only the
+// fallback for a pane Herdr reported no cwd for.
+func spaceCwd(root herdr.Pane, repoPath string) string {
+	if strings.TrimSpace(root.Cwd) != "" {
+		return root.Cwd
+	}
+	return repoPath
 }
 
 // runAgentStep is the last step of every path through this package: what
@@ -391,9 +446,10 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 		if deps.Layout == nil {
 			return out, fmt.Errorf("setup %q needs a Herdr session to build panes in", opts.Setup.Name)
 		}
-		plan, panes, err := applySetup(s, deps.Layout, cfg, *opts.Setup, root, out.WorkspaceID, out.RepoPath, data)
+		plan, panes, problems, err := applySetup(s, deps.Layout, cfg, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), data)
 		out.SetupName = plan.Name
 		out.SetupPanes = panes
+		out.Warnings = append(out.Warnings, problems...)
 		if err != nil {
 			return out, err
 		}

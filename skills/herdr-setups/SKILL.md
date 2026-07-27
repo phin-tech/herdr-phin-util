@@ -118,7 +118,11 @@ empty for a plain checkout; `{{.Branch}}` is empty until one is resolved.
 - Every pane is created before anything runs in one, and focus is applied last.
 - `wait_for` holds the rest of the layout until that pane's output matches. Use
   it when a later pane's prompt depends on an earlier pane having started. A
-  timeout is not fatal — it warns and carries on.
+  timeout is not fatal — it warns and carries on. A pane whose work never
+  started is not waited on at all.
+- A pane that fails is reported and **skipped**, not fatal: the panes after it
+  still get built and filled. Only a tab that could not be created takes its
+  own panes with it, since their splits would land in the tab before it.
 
 ## Using one
 
@@ -165,6 +169,18 @@ agent; an agent and a command cannot share a pane; only one pane may be
 
 **The layout builds but a prompt is blank.** A placeholder is misspelled, or
 the field is empty for that target kind. `--dry-run` shows it.
+
+**A pane came up bare.** Read the `warning:` lines the run printed — one per
+failed step, naming the tab and the cause — and look for a pane renamed
+`failed: <label>` in the Space. `agent_not_ready` from `agent.prompt` after the
+agent visibly started usually means that agent is sitting on something modal
+(codex's update prompt does this); the prompt is settled and retried once
+before it is reported.
+
+**The panes are on the wrong branch.** A warning says so: `worktree.create`
+failed and the Space fell back to something else. If it fell back to the source
+checkout, the whole layout is looking at that checkout's branch — fix the
+worktree (usually one already exists for that branch) rather than the file.
 
 **A command sits at the prompt unrun.** That is what the plugin's own pacing
 exists to prevent; if it recurs, the shell is unusually slow to draw its

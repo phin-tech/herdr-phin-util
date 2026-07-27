@@ -207,6 +207,7 @@ func runOpen(args []string) int {
 
 	out, err := open.Run(openDeps(client), cfg, input, open.Options{Agent: agentOverride, Prompt: promptOverride, Setup: chosen})
 	if err != nil {
+		printWarnings(out)
 		fmt.Fprintln(os.Stderr, err)
 		// The agent step runs after the Space exists, so a failure there
 		// leaves a perfectly good Space behind. Saying it was not created
@@ -226,6 +227,9 @@ func runOpen(args []string) int {
 		fmt.Printf("branch: %s\n", out.Branch)
 	}
 	reportSetupOrAgent(out)
+	if reportWarnings(client, out) {
+		return 1
+	}
 	_ = client.Notify("Space ready", out.Label)
 	return 0
 }
@@ -265,6 +269,11 @@ func runPopup() int {
 		_ = client.Notify("Workspace not created", runErr.Error())
 		return 1
 	}
+	// The popup leaves no terminal to read, so a half-built Space is worth a
+	// notification even more here than on the command line.
+	if reportWarnings(client, out) {
+		return 1
+	}
 	_ = client.Notify("Space ready", out.Label)
 	return 0
 }
@@ -302,6 +311,33 @@ func reportSetupOrAgent(out open.Outcome) {
 	}
 	if out.AgentStarted {
 		fmt.Println("agent started; prompt typed and waiting for you to send it")
+	}
+}
+
+// reportWarnings prints the steps that failed without stopping the run, and
+// says so in a notification too. It reports whether there were any, because a
+// Space that only half-built is not a success: exiting 0 there is what made
+// the failure invisible in the first place.
+//
+// The Space is still named as created. It exists, it is on screen, and
+// telling someone it was not would send them looking for something that is
+// sitting right there.
+func reportWarnings(client *herdr.Client, out open.Outcome) bool {
+	if len(out.Warnings) == 0 {
+		return false
+	}
+	printWarnings(out)
+	title := fmt.Sprintf("%s built with %d problem%s", out.Label, len(out.Warnings), plural(len(out.Warnings)))
+	_ = client.Notify(title, strings.Join(out.Warnings, "\n"))
+	return true
+}
+
+// printWarnings writes the warnings without notifying, for the paths that
+// already have their own notification to send -- a run that both degraded and
+// then failed outright should still say what it degraded to.
+func printWarnings(out open.Outcome) {
+	for _, w := range out.Warnings {
+		fmt.Fprintln(os.Stderr, "warning: "+w)
 	}
 }
 
@@ -431,6 +467,9 @@ func reportPick(client *herdr.Client, p *ui.Picker) int {
 	if picked.Kind == session.KindSpace {
 		// Switching is its own confirmation -- you are looking at the result.
 		return 0
+	}
+	if reportWarnings(client, out) {
+		return 1
 	}
 	_ = client.Notify("Space ready", out.Label)
 	return 0
@@ -575,6 +614,7 @@ func runProject(args []string) int {
 
 	out, err := open.RunProject(openDeps(client), cfg, dir, open.Options{Agent: agentOverride, Setup: chosen})
 	if err != nil {
+		printWarnings(out)
 		fmt.Fprintln(os.Stderr, err)
 		// Same split as runOpen: a Space that exists but whose agent step
 		// failed is not the same as no Space at all.
@@ -589,6 +629,9 @@ func runProject(args []string) int {
 
 	fmt.Printf("opened %q in Space %s (pane %s)\n", out.Label, out.WorkspaceID, out.PaneID)
 	reportSetupOrAgent(out)
+	if reportWarnings(client, out) {
+		return 1
+	}
 	_ = client.Notify("Space ready", out.Label)
 	return 0
 }
