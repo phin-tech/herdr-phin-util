@@ -100,6 +100,12 @@ type Picker struct {
 	done     bool
 	quitting bool
 
+	// progress is the checklist for a pick that is being opened, nil until one
+	// starts. Descending and refreshing keep the plain status line: they are
+	// one step each, and a one-item checklist is worse than a sentence.
+	progress *progressList
+	events   progressChannel
+
 	// Hit regions recorded by the last render, same approach as the workspace
 	// maker: nothing is clickable before it has been drawn.
 	listTop     int
@@ -349,6 +355,16 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.width, p.height = msg.Width, msg.Height
 		p.clampCursor()
 		return p, nil
+
+	case progressMsg:
+		p.progress.apply(open.Event(msg))
+		return p, waitForProgress(p.events)
+
+	case progressTickMsg:
+		if !p.running {
+			return p, nil
+		}
+		return p, tickProgress()
 
 	case pickResultMsg:
 		p.running = false
@@ -766,24 +782,39 @@ func (p *Picker) submit() tea.Cmd {
 		// workspace maker follows.
 		opts.Prompt = p.promptArea.Value()
 	}
-	deps := p.deps
 	focuser := p.focuser
 	cfg := p.cfg
 	repo := p.repo
 
+	// Switching to a Space that already exists is instant -- there is nothing
+	// to clone, cut or start -- so it keeps the status line rather than
+	// flashing a checklist that would be finished before it was read.
+	var run tea.Cmd
+	deps := p.deps
+	if candidate.Kind != session.KindSpace {
+		p.progress = newProgressList()
+		p.events = newProgressChannel()
+		deps.Open.Progress = p.events.reporter()
+	}
+
 	if level == levelWorktrees && candidate.Kind != session.KindSpace {
 		// A Space is a Space at either level, so focusing stays with the
 		// project-level dispatch; everything else here is worktree-shaped.
-		return func() tea.Msg {
+		run = func() tea.Msg {
 			out, err := session.OpenWorktree(deps, cfg, repo, candidate, opts)
+			return pickResultMsg{out: out, err: err}
+		}
+	} else {
+		run = func() tea.Msg {
+			out, err := session.Open(deps, focuser, cfg, candidate, opts)
 			return pickResultMsg{out: out, err: err}
 		}
 	}
 
-	return func() tea.Msg {
-		out, err := session.Open(deps, focuser, cfg, candidate, opts)
-		return pickResultMsg{out: out, err: err}
+	if p.progress == nil {
+		return run
 	}
+	return tea.Batch(run, waitForProgress(p.events), tickProgress())
 }
 
 // toggleEditor opens the prompt box for the highlighted row, pre-filled with

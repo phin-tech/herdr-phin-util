@@ -58,6 +58,10 @@ type Model struct {
 	done     bool
 	quitting bool
 
+	// progress is the checklist for the run in flight, nil until one starts.
+	progress *progressList
+	events   progressChannel
+
 	// Hit regions, recorded during the last render and consulted on the next
 	// click -- rendered once, clicked against many times, same as Phin Board's
 	// link tracking.
@@ -110,6 +114,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.promptArea.SetWidth(m.width - 4)
 		return m, nil
+
+	case progressMsg:
+		m.progress.apply(open.Event(msg))
+		// Re-arm before anything else: the run keeps reporting whether or not
+		// this frame drew, and a listener that stops listening fills the buffer.
+		return m, waitForProgress(m.events)
+
+	case progressTickMsg:
+		if !m.running {
+			return m, nil
+		}
+		return m, tickProgress()
 
 	case submitResultMsg:
 		m.running = false
@@ -274,16 +290,29 @@ func buildRunOptions(agentOn, promptEdited bool, promptText string) open.Options
 // submitCmd closes over exactly what is on screen right now and runs it on a
 // worker goroutine, the standard bubbletea way to do blocking work without
 // freezing the UI.
+//
+// It returns three commands, not one: the run itself, the listener that turns
+// its progress into messages, and the ticker that keeps the running step's
+// clock moving. Deps is a value, so pointing its Progress at this popup's
+// channel does not touch the caller's copy.
 func (m *Model) submitCmd() tea.Cmd {
 	input := m.linkInput.Value()
 	opts := buildRunOptions(m.agentOn, m.promptEdited, m.promptArea.Value())
-	deps := m.deps
 	cfg := m.cfg
 
-	return func() tea.Msg {
-		out, err := open.Run(deps, cfg, input, opts)
-		return submitResultMsg{out: out, err: err}
-	}
+	m.progress = newProgressList()
+	m.events = newProgressChannel()
+	deps := m.deps
+	deps.Progress = m.events.reporter()
+
+	return tea.Batch(
+		func() tea.Msg {
+			out, err := open.Run(deps, cfg, input, opts)
+			return submitResultMsg{out: out, err: err}
+		},
+		waitForProgress(m.events),
+		tickProgress(),
+	)
 }
 
 // Result reports what the popup decided, for the caller to notify or log

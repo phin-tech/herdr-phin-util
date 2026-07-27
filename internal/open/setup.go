@@ -116,7 +116,9 @@ type Layout interface {
 // failed, which is exactly the thing that was hardest to diagnose about a
 // half-built Space. Only a plan that cannot be resolved at all is an error,
 // since then nothing has been built to report on.
-func applySetup(s Session, l Layout, cfg *config.Settings, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
+func applySetup(deps Deps, cfg *config.Settings, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
+	l := deps.Layout
+
 	plan, err := def.Resolve(cwd, data)
 	if err != nil {
 		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
@@ -125,8 +127,14 @@ func applySetup(s Session, l Layout, cfg *config.Settings, def setup.Setup, root
 		return plan, nil, nil, nil
 	}
 
+	// The two passes are the two things worth watching separately: the layout
+	// appearing, then each pane being given what it is for. The first is fast
+	// and the second is where the minutes go.
+	done := deps.Progress.step("panes", fmt.Sprintf("Building %s", countOf(len(plan.Steps), "pane")))
 	panes, problems := buildPanes(l, plan, root, workspaceID)
-	problems = append(problems, fillPanes(s, l, cfg, plan, panes, workspaceID)...)
+	done(nil)
+
+	problems = append(problems, fillPanes(deps, cfg, plan, panes, workspaceID)...)
 
 	// Focus last, once there is nothing left to build that could steal it.
 	// Losing it is cosmetic next to a Space that is otherwise standing.
@@ -202,7 +210,8 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 
 // fillPanes starts what each pane is for, in the order the file listed them,
 // and reports what did not start without holding up what is next.
-func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes []string, workspaceID string) []string {
+func fillPanes(deps Deps, cfg *config.Settings, plan setup.Plan, panes []string, workspaceID string) []string {
+	s, l := deps.Session, deps.Layout
 	var problems []string
 
 	for i, step := range plan.Steps {
@@ -211,7 +220,13 @@ func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes
 			continue
 		}
 
-		if err := fillPane(s, l, cfg, step, paneID, i, workspaceID); err != nil {
+		// One line per pane, named the way the file names it, so a run that is
+		// sitting on a slow agent says which agent rather than just "working".
+		done := deps.Progress.step(fmt.Sprintf("pane-%d", i), fillLabel(step))
+		err := fillPane(s, l, cfg, step, paneID, i, workspaceID)
+		done(err)
+
+		if err != nil {
 			problems = append(problems, err.Error())
 			// The Space itself says which pane did not get what it was for,
 			// so a bare shell is self-explaining rather than a mystery.
@@ -231,7 +246,12 @@ func fillPanes(s Session, l Layout, cfg *config.Settings, plan setup.Plan, panes
 		// match may simply have been guessed wrong, and stopping the layout
 		// over a wrong guess would be a worse answer than continuing.
 		if step.WaitFor != nil {
+			done := deps.Progress.step(fmt.Sprintf("wait-%d", i), fmt.Sprintf("Waiting for %q in %s", step.WaitFor.Match, stepTab(step)))
 			_ = s.WaitPaneOutput(paneID, step.WaitFor.Match, step.WaitFor.TimeoutMs)
+			// Reported as finished either way: a wait that timed out is not a
+			// failure here, and marking it as one would say the run went wrong
+			// when it deliberately carried on.
+			done(nil)
 		}
 	}
 	return problems
@@ -424,6 +444,41 @@ func setupStartsAnAgent(plan setup.Plan) bool {
 		}
 	}
 	return false
+}
+
+// fillLabel says what a pane is about to be given, in the terms the setup file
+// used: the agent or command, and the tab it is in. "Starting codex in
+// reviewers" is the line someone watching a slow run wants -- it names the
+// thing being waited on, which is the whole point of showing it.
+func fillLabel(step setup.Step) string {
+	switch {
+	case step.Command != "":
+		return fmt.Sprintf("Running %s in %s", firstWord(step.Command), stepTab(step))
+	case step.Agent != "":
+		if step.Label != "" {
+			return fmt.Sprintf("Starting %s in %s", step.Label, stepTab(step))
+		}
+		return fmt.Sprintf("Starting %s in %s", step.Agent, stepTab(step))
+	default:
+		return "Opening " + stepTab(step)
+	}
+}
+
+// firstWord keeps a command line to the program being run. A setup's commands
+// carry flags and paths that would push everything else off a narrow popup.
+func firstWord(command string) string {
+	if i := strings.IndexAny(command, " \t"); i > 0 {
+		return command[:i]
+	}
+	return command
+}
+
+// countOf pluralises a small count for a status line: "1 pane", "4 panes".
+func countOf(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // stepTab names a tab for an error message, falling back to its position.

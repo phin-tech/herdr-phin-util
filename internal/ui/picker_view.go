@@ -21,6 +21,10 @@ var (
 // pickerView renders the popup and records where the rows landed, so the next
 // click can be tested against exactly what is on screen right now.
 func (p *Picker) pickerView() string {
+	if p.running && p.progress != nil {
+		return p.viewRunning()
+	}
+
 	var lines []string
 	add := func(s string) { lines = append(lines, s) }
 
@@ -53,12 +57,48 @@ func (p *Picker) pickerView() string {
 
 	switch {
 	case p.err != nil:
+		// A failed pick keeps its checklist: which step it reached is most of
+		// the diagnosis, and the list is gone by the time the error is read
+		// otherwise.
+		if steps := p.progress.render(p.width); len(steps) > 0 {
+			lines = append(lines, steps...)
+			add("")
+		}
 		add(errStyle.Render(p.err.Error()))
 	case p.status != "":
 		add(dimStyle.Render(p.status))
 	default:
 		add(p.viewPickerHint())
 	}
+
+	return strings.Join(lines, "\n")
+}
+
+// viewRunning replaces the list with the checklist while a pick is being
+// opened, for the same reason the workspace maker does it: the list is inert
+// during the run, and what the run is doing is the only thing there is to say.
+func (p *Picker) viewRunning() string {
+	p.listTop, p.visibleRows, p.toggleRow = 0, 0, -1
+
+	var lines []string
+	add := func(s string) { lines = append(lines, s) }
+
+	add(p.viewTitle())
+	add("")
+	if p.picked.Label != "" {
+		add(dimStyle.Render(statusFor(p.picked)))
+		add("")
+	}
+
+	steps := p.progress.render(p.width)
+	if len(steps) == 0 {
+		add(dimStyle.Render("starting..."))
+	}
+	lines = append(lines, steps...)
+	add("")
+	add(dimStyle.Render("total ") + progressTimeStyle.Render(shortDuration(p.progress.total())))
+	add("")
+	add(keyStyle.Render("ctrl+c") + dimStyle.Render(" cancel"))
 
 	return strings.Join(lines, "\n")
 }

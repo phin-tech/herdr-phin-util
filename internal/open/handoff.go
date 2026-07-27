@@ -73,13 +73,8 @@ func RunHandoff(deps Deps, opts HandoffOptions) (Outcome, error) {
 	if err := startAgentWithRetry(deps.Session, pane.PaneID, workspaceID, agentName(tgt.Label()), handoffKind, args); err != nil {
 		return out, fmt.Errorf("start agent: %w", err)
 	}
-	if err := deps.Session.WaitAgentIdle(pane.PaneID); err != nil {
-		return out, fmt.Errorf("wait for agent: %w", err)
-	}
-	if marker, ok := readyMarkers[handoffKind]; ok {
-		if err := deps.Session.WaitPaneOutput(pane.PaneID, marker, readyMarkerTimeoutMs); err != nil {
-			return out, fmt.Errorf("wait for agent to render its prompt: %w", err)
-		}
+	if err := waitAgentDrawn(deps.Session, pane.PaneID, handoffKind); err != nil {
+		return out, err
 	}
 
 	out.AgentStarted = true

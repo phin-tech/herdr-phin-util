@@ -24,6 +24,10 @@ var (
 // mouse click can be tested against exactly what is on screen right now --
 // nothing is clickable before it has been drawn at least once.
 func (m *Model) view() string {
+	if m.running {
+		return m.viewRunning()
+	}
+
 	var lines []string
 	add := func(s string) { lines = append(lines, s) }
 
@@ -52,6 +56,12 @@ func (m *Model) view() string {
 	add("")
 
 	if m.err != nil {
+		// The checklist survives a failure: which step it got to is most of
+		// what you want to know before deciding whether to press Create again.
+		if steps := m.progress.render(m.width); len(steps) > 0 {
+			lines = append(lines, steps...)
+			add("")
+		}
 		add(errStyle.Render(m.err.Error()))
 		add("")
 	} else if m.status != "" {
@@ -64,6 +74,44 @@ func (m *Model) view() string {
 	add(buttons)
 	add("")
 	add(m.viewHint())
+
+	return strings.Join(lines, "\n")
+}
+
+// viewRunning replaces the form with the checklist for as long as the run
+// lasts. The form is inert while running -- every key and click is ignored --
+// so leaving it on screen would be showing a control panel nobody can touch,
+// in place of the one thing there is to say.
+//
+// Hit regions are pushed off screen rather than left at their old rows: a
+// click cannot land while running, but a stale region outliving the layout
+// that produced it is the kind of thing that stops being true later.
+func (m *Model) viewRunning() string {
+	m.linkRow, m.toggleRow = -1, -1
+	m.promptTop, m.promptBot = -1, -1
+	m.buttonsRow = -1
+
+	var lines []string
+	add := func(s string) { lines = append(lines, s) }
+
+	add(titleStyle.Render("Smart workspace maker"))
+	add("")
+	if v := m.linkInput.Value(); v != "" {
+		add(dimStyle.Render(targetSummary(m.tgt)))
+		add("")
+	}
+
+	steps := m.progress.render(m.width)
+	if len(steps) == 0 {
+		// The gap between pressing Create and the first step reporting. Saying
+		// "starting..." beats an empty box that looks like nothing happened.
+		add(dimStyle.Render("starting..."))
+	}
+	lines = append(lines, steps...)
+	add("")
+	add(dimStyle.Render("total ") + progressTimeStyle.Render(shortDuration(m.progress.total())))
+	add("")
+	add(keyStyle.Render("ctrl+c") + dimStyle.Render(" cancel"))
 
 	return strings.Join(lines, "\n")
 }

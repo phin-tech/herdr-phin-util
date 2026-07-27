@@ -108,7 +108,7 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 	l := &fakeLayout{}
 	cfg := &config.Settings{}
 
-	plan, panes, problems, err := applySetup(s, l, cfg, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"})
+	plan, panes, problems, err := applySetup(Deps{Session: s, Layout: l}, cfg, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"})
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 // has started in it resizes a running program.
 func TestApplySetupCreatesEveryPaneBeforeFillingAny(t *testing.T) {
 	l := &fakeLayout{}
-	if _, _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -177,7 +177,7 @@ func TestApplySetupTypesUnsubmittedPromptsAndSendsSubmittedOnes(t *testing.T) {
 	s := &fakeSession{}
 	l := &fakeLayout{}
 
-	if _, _, _, err := applySetup(s, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,7 +201,7 @@ func TestApplySetupWaitsBeforeContinuing(t *testing.T) {
 	s := &fakeSession{}
 	l := &fakeLayout{}
 
-	if _, _, _, err := applySetup(s, l, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,7 +227,7 @@ func TestApplySetupWaitTimeoutIsNotFatal(t *testing.T) {
 		{Split: "down", Command: "echo done"},
 	}}}}
 
-	if _, _, _, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatalf("a wait timeout aborted the layout: %v", err)
 	}
 	if !strings.Contains(l.transcript(), "echo done") {
@@ -245,7 +245,7 @@ func TestApplySetupWaitsForTheCodexInputBeforePrompting(t *testing.T) {
 		{Agent: "codex", Prompt: "review this", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestApplySetupDoesNotPromptACodexStuckOnItsStartupScreen(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex", Prompt: "review this", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestApplySetupFocusesTheMarkedPane(t *testing.T) {
 		{Split: "down", Focus: true},
 	}}}}
 
-	_, panes, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, panes, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestApplySetupFocusesTheFirstPaneWhenNoneIsMarked(t *testing.T) {
 	l := &fakeLayout{}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{{}, {Split: "down"}}}}}
 
-	if _, _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if last := l.calls[len(l.calls)-1]; last != "focus root" {
@@ -323,7 +323,7 @@ func TestApplySetupFocusesTheFirstPaneWhenNoneIsMarked(t *testing.T) {
 func TestApplySetupRejectsAnUnknownAgentKind(t *testing.T) {
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{{Agent: "clod"}}}}}
 
-	_, _, problems, err := applySetup(&fakeSession{}, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestApplySetupFailureNamesTheTab(t *testing.T) {
 	l := &fakeLayout{splitErr: errors.New("no room")}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{{}, {Split: "down"}}}}}
 
-	_, panes, problems, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, panes, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestApplySetupCarriesOnPastAFailedPane(t *testing.T) {
 		{Split: "down", Label: "checks", Command: "roborev review-branch"},
 	}}}}
 
-	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestApplySetupSkipsTheRestOfATabItCouldNotCreate(t *testing.T) {
 		{Name: "second", Panes: []setup.Pane{{Command: "two"}, {Split: "down", Command: "three"}}},
 	}}
 
-	_, _, problems, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestApplySetupSkipsTheWaitOfAFailedPane(t *testing.T) {
 		{Command: "roborev", WaitFor: &setup.WaitFor{Match: "queued", TimeoutMs: 30000}},
 	}}}}
 
-	if _, _, _, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range s.waitOutputCalls {
@@ -435,7 +435,7 @@ func TestApplySetupRetriesAPromptOnce(t *testing.T) {
 		{Agent: "claude", Prompt: "review it", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestApplySetupWaitsForLaunchBeforeSubmittingAPrompt(t *testing.T) {
 		{Agent: "claude", Prompt: "review it", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestApplySetupReportsAnAgentThatNeverLaunches(t *testing.T) {
 		{Agent: "codex", Prompt: "review it", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestApplySetupStillTypesIntoAnAgentThatNeverLaunches(t *testing.T) {
 		{Agent: "claude", Prompt: "read this first"},
 	}}}}
 
-	_, _, problems, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestApplySetupAgentNamesAreUniqueAndValid(t *testing.T) {
 		{Split: "down", Label: "Worker #2!", Agent: "claude"},
 	}}}}
 
-	if _, _, _, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -557,7 +557,7 @@ func TestApplySetupRetriesATakenAgentNameQualifiedByTheSpace(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex"},
 	}}}}
 
-	_, _, problems, err := applySetup(s, l, &config.Settings{}, def, rootPane(), "w14", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, def, rootPane(), "w14", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestApplySetupReportsAnAgentNameTakenTwice(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex"},
 	}}}}
 
-	_, _, problems, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w14", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w14", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestApplySetupInheritsTheSpaceDirectory(t *testing.T) {
 		{Name: "b", Cwd: "docs"},
 	}}
 
-	if _, _, _, err := applySetup(&fakeSession{}, l, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -749,7 +749,7 @@ func TestApplySetupPassesTheAgentCommandLine(t *testing.T) {
 		{Split: "down", Agent: "codex"},
 	}}}}
 
-	if _, _, _, err := applySetup(s, &fakeLayout{}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.startAgentCalls) != 2 {

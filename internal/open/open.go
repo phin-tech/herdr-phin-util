@@ -258,6 +258,9 @@ type Deps struct {
 	// built wherever the caller already is -- the repo you're sitting in
 	// when you paste the link.
 	Cwd string
+	// Progress is told what the run is doing as it does it, for a caller with
+	// somewhere to show it. Nil everywhere else, which is most callers.
+	Progress Progress
 }
 
 // Options carries the popup's (or CLI flags') overrides of the config
@@ -344,12 +347,17 @@ func runGitHubPR(deps Deps, cfg *config.Settings, tgt target.Target, opts Option
 		return Outcome{}, err
 	}
 
+	done := deps.Progress.step("lookup", fmt.Sprintf("Looking up %s", tgt.Label()))
 	info, err := deps.PRs.LookupPR(tgt.Owner, tgt.Repo, tgt.Number)
+	done(err)
 	if err != nil {
 		return Outcome{}, err
 	}
 
-	if err := deps.Git.FetchBranch(repoPath, info.Branch); err != nil {
+	done = deps.Progress.step("fetch", "Fetching "+info.Branch)
+	err = deps.Git.FetchBranch(repoPath, info.Branch)
+	done(err)
+	if err != nil {
 		return Outcome{}, err
 	}
 
@@ -365,7 +373,7 @@ func runGitHubPR(deps Deps, cfg *config.Settings, tgt target.Target, opts Option
 		Focus: true,
 	}
 
-	pane, workspaceID, warnings, err := createOrOpenWorktree(deps.Session, req)
+	pane, workspaceID, warnings, err := createOrOpenWorktreeReporting(deps.Session, deps.Progress, req)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -408,7 +416,7 @@ func runGitHubIssue(deps Deps, cfg *config.Settings, tgt target.Target, opts Opt
 		Focus: true,
 	}
 
-	pane, workspaceID, warnings, err := createOrOpenWorktree(deps.Session, req)
+	pane, workspaceID, warnings, err := createOrOpenWorktreeReporting(deps.Session, deps.Progress, req)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -437,7 +445,7 @@ func runLinear(deps Deps, cfg *config.Settings, tgt target.Target, opts Options)
 		Focus: true,
 	}
 
-	pane, workspaceID, warnings, err := createOrOpenWorktree(deps.Session, req)
+	pane, workspaceID, warnings, err := createOrOpenWorktreeReporting(deps.Session, deps.Progress, req)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -450,13 +458,33 @@ func runLinear(deps Deps, cfg *config.Settings, tgt target.Target, opts Options)
 }
 
 func runPlain(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) (Outcome, error) {
+	done := deps.Progress.step("space", "Creating Space "+tgt.Label())
 	pane, workspaceID, err := deps.Session.CreateWorkspace(deps.Cwd, tgt.Label(), true)
+	done(err)
 	if err != nil {
 		return Outcome{}, err
 	}
 
 	out := Outcome{Kind: tgt.Kind, Label: tgt.Label(), RepoPath: deps.Cwd, WorkspaceID: workspaceID, PaneID: pane.PaneID}
 	return runAgentStep(deps, cfg, tgt, opts, pane, promptData(tgt, "", ""), out)
+}
+
+// waitAgentDrawn blocks until the agent in paneID has actually drawn its
+// input: idle first, then the kind's on-screen marker where one is known. It
+// is the single-agent path's half of what startSetupAgent does per pane, and
+// the two say the same thing about readiness for the same reasons.
+func waitAgentDrawn(s Session, paneID, kind string) error {
+	if err := s.WaitAgentIdle(paneID); err != nil {
+		return fmt.Errorf("wait for agent: %w", err)
+	}
+	marker, ok := readyMarkers[kind]
+	if !ok {
+		return nil
+	}
+	if err := s.WaitPaneOutput(paneID, marker, readyMarkerTimeoutMs); err != nil {
+		return fmt.Errorf("wait for agent to render its prompt: %w", err)
+	}
+	return nil
 }
 
 // createOrOpenWorktree tries to make a new worktree, and falls back to
@@ -470,6 +498,20 @@ func runPlain(deps Deps, cfg *config.Settings, tgt target.Target, opts Options) 
 // one that was asked for, and a Space that quietly reviews main instead of
 // the pull request is worse than one that failed outright.
 func createOrOpenWorktree(s Session, req herdr.WorktreeRequest) (herdr.Pane, string, []string, error) {
+	return createOrOpenWorktreeReporting(s, nil, req)
+}
+
+// createOrOpenWorktreeReporting is the same thing with somewhere to say so.
+// Cutting a worktree is one of the two steps that can take real time on a big
+// repository, so it is worth a line of its own even though it is a single call.
+func createOrOpenWorktreeReporting(s Session, prog Progress, req herdr.WorktreeRequest) (herdr.Pane, string, []string, error) {
+	done := prog.step("worktree", "Creating worktree "+req.Branch)
+	pane, workspaceID, warnings, err := createOrOpenWorktreeInner(s, req)
+	done(err)
+	return pane, workspaceID, warnings, err
+}
+
+func createOrOpenWorktreeInner(s Session, req herdr.WorktreeRequest) (herdr.Pane, string, []string, error) {
 	pane, workspaceID, err := s.CreateWorktree(req)
 	if err == nil {
 		return pane, workspaceID, nil, nil
@@ -539,7 +581,7 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 		if deps.Layout == nil {
 			return out, fmt.Errorf("setup %q needs a Herdr session to build panes in", opts.Setup.Name)
 		}
-		plan, panes, problems, err := applySetup(s, deps.Layout, cfg, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), data)
+		plan, panes, problems, err := applySetup(deps, cfg, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), data)
 		out.SetupName = plan.Name
 		out.SetupPanes = panes
 		out.Warnings = append(out.Warnings, problems...)
@@ -560,18 +602,22 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 
 	// No args: every path through here starts a fresh agent, and only the
 	// handoff has a session to resume.
-	if err := startAgentWithRetry(s, paneID, out.WorkspaceID, agentName(tgt.Label()), cfg.Agent.Kind, nil); err != nil {
+	done := deps.Progress.step("agent", "Starting "+cfg.Agent.Kind)
+	err := startAgentWithRetry(s, paneID, out.WorkspaceID, agentName(tgt.Label()), cfg.Agent.Kind, nil)
+	done(err)
+	if err != nil {
 		return out, fmt.Errorf("start agent: %w", err)
 	}
+
 	// Typing into a pane that is still on a startup banner would land in the
-	// wrong place, so this waits for the agent to actually be ready.
-	if err := s.WaitAgentIdle(paneID); err != nil {
-		return out, fmt.Errorf("wait for agent: %w", err)
-	}
-	if marker, ok := readyMarkers[cfg.Agent.Kind]; ok {
-		if err := s.WaitPaneOutput(paneID, marker, readyMarkerTimeoutMs); err != nil {
-			return out, fmt.Errorf("wait for agent to render its prompt: %w", err)
-		}
+	// wrong place, so this waits for the agent to actually be ready. It is its
+	// own step because it is the slow one -- an agent drawing its input is
+	// seconds, and on a first run it can be much longer.
+	done = deps.Progress.step("agent-ready", "Waiting for "+cfg.Agent.Kind)
+	err = waitAgentDrawn(s, paneID, cfg.Agent.Kind)
+	done(err)
+	if err != nil {
+		return out, err
 	}
 
 	prompt := opts.Prompt
@@ -591,6 +637,7 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 		return out, nil
 	}
 
+	deps.Progress.mark("prompt", "Typing the prompt")
 	if err := s.SendText(paneID, prompt); err != nil {
 		return out, fmt.Errorf("send prompt: %w", err)
 	}

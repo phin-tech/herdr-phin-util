@@ -84,9 +84,11 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 		err         error
 	)
 	if req.Existing {
+		done := deps.Progress.step("worktree", "Opening worktree "+req.Branch)
 		pane, workspaceID, err = deps.Session.OpenWorktree(hreq)
+		done(err)
 	} else {
-		pane, workspaceID, warnings, err = createWorktreeWithFallback(deps.Session, hreq, req.FallbackBase)
+		pane, workspaceID, warnings, err = createWorktreeWithFallback(deps.Session, deps.Progress, hreq, req.FallbackBase)
 	}
 	if err != nil {
 		return Outcome{}, err
@@ -116,8 +118,8 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 // not resolve at all when it has not -- or when the repository has no remote.
 // Retrying with the plain local branch turns that from a failure into a
 // slightly staler starting point, which is the better of the two.
-func createWorktreeWithFallback(s Session, req herdr.WorktreeRequest, fallbackBase string) (herdr.Pane, string, []string, error) {
-	pane, workspaceID, warnings, err := createOrOpenWorktree(s, req)
+func createWorktreeWithFallback(s Session, prog Progress, req herdr.WorktreeRequest, fallbackBase string) (herdr.Pane, string, []string, error) {
+	pane, workspaceID, warnings, err := createOrOpenWorktreeReporting(s, prog, req)
 	if err == nil {
 		return pane, workspaceID, warnings, nil
 	}
@@ -125,9 +127,13 @@ func createWorktreeWithFallback(s Session, req herdr.WorktreeRequest, fallbackBa
 		return herdr.Pane{}, "", nil, err
 	}
 
+	// The retry is reported under its own key: it is a second attempt a person
+	// watching should see happen, not a silent extension of the first.
 	retry := req
 	retry.Base = fallbackBase
-	pane, workspaceID, warnings, retryErr := createOrOpenWorktree(s, retry)
+	done := prog.step("worktree-retry", "Retrying worktree from "+fallbackBase)
+	pane, workspaceID, warnings, retryErr := createOrOpenWorktreeInner(s, retry)
+	done(retryErr)
 	if retryErr != nil {
 		// The first error is the informative one: it names the base that was
 		// actually asked for.

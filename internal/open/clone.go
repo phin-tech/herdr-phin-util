@@ -67,7 +67,13 @@ func EnsureCloned(deps Deps, cfg *config.Settings, tgt target.Target) (string, e
 		return "", fmt.Errorf("prepare %s: %w", filepath.Dir(dest), err)
 	}
 
-	if err := deps.Clone.Clone(tgt.Owner, tgt.Repo, dest); err != nil {
+	// The slowest step in the whole action, and the one most worth naming: a
+	// cold clone of a large repository is the case where a popup that says
+	// nothing looks most like a popup that has hung.
+	done := deps.Progress.step("clone", fmt.Sprintf("Cloning %s/%s", tgt.Owner, tgt.Repo))
+	err = deps.Clone.Clone(tgt.Owner, tgt.Repo, dest)
+	done(err)
+	if err != nil {
 		return "", err
 	}
 	return dest, nil

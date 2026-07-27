@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -186,6 +187,48 @@ func TestBuildRunOptionsUsesOverrideOnlyWhenPromptEdited(t *testing.T) {
 	}
 }
 
+// submitResult runs what submitCmd produces and returns the run's own result.
+//
+// That is a batch now -- the run, the listener that turns its progress into
+// messages, and the ticker that moves the clock -- and the listener blocks on
+// the progress channel until the run reports something. So the members are run
+// concurrently, the way a Program runs them: calling them in sequence would
+// stop on the first one that waits.
+func submitResult(t *testing.T, cmd tea.Cmd) submitResultMsg {
+	t.Helper()
+
+	msgs := make(chan tea.Msg, 32)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		go func() {
+			msg := c()
+			if batch, ok := msg.(tea.BatchMsg); ok {
+				for _, sub := range batch {
+					run(sub)
+				}
+				return
+			}
+			msgs <- msg
+		}()
+	}
+	run(cmd)
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case msg := <-msgs:
+			if res, ok := msg.(submitResultMsg); ok {
+				return res
+			}
+		case <-deadline:
+			t.Fatal("the submission never produced a result")
+		}
+	}
+}
+
 // submitCmd is what Enter/ctrl+s produces: a tea.Cmd, callable directly in a
 // test without a running Program, closing over exactly what was on screen.
 func TestSubmitCmdRunsWithCurrentFieldValues(t *testing.T) {
@@ -193,12 +236,7 @@ func TestSubmitCmdRunsWithCurrentFieldValues(t *testing.T) {
 	m = typeString(m, "a plain space name")
 	m.agentOn = false
 
-	cmd := m.submitCmd()
-	msg := cmd()
-	res, ok := msg.(submitResultMsg)
-	if !ok {
-		t.Fatalf("submitCmd produced %T, want submitResultMsg", msg)
-	}
+	res := submitResult(t, m.submitCmd())
 	if res.err != nil {
 		t.Fatalf("submit: %v", res.err)
 	}
@@ -276,11 +314,7 @@ func TestClickingCreateButtonSubmits(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("clicking Create should produce a command")
 	}
-	msg := cmd()
-	res, ok := msg.(submitResultMsg)
-	if !ok {
-		t.Fatalf("clicking Create produced %T, want submitResultMsg", msg)
-	}
+	res := submitResult(t, cmd)
 	if res.err != nil {
 		t.Fatalf("submit: %v", res.err)
 	}

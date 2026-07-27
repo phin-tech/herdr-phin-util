@@ -38,7 +38,9 @@ func RunProject(deps Deps, cfg *config.Settings, path string, opts Options) (Out
 	name := filepath.Base(abs)
 	tgt := target.Target{Kind: target.KindProject, Text: name}
 
+	done := deps.Progress.step("space", "Creating Space "+tgt.Label())
 	pane, workspaceID, err := deps.Session.CreateWorkspace(abs, tgt.Label(), true)
+	done(err)
 	if err != nil {
 		return Outcome{}, err
 	}

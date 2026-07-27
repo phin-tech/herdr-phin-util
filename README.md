@@ -310,6 +310,28 @@ Open a project › roux-next-gen › setup
 The list is filtered to what applies to that row, and each row says which
 source it came from.
 
+### While it builds
+
+Opening a Space is a handful of slow steps, so the popup itemises them instead
+of sitting on "working...". Steps appear as they start, since the list is not
+knowable up front — a repo already on disk is not cloned, and the panes depend
+on the file:
+
+```
+[✓] Cloning phin-tech/ds-pathfinder       12.3s
+[✓] Creating worktree fix-the-thing        3.4s
+[✓] Building 4 panes                       0.3s
+[✓] Starting orchestrator in review        4.2s
+[ ] Starting codex-reviewer in reviewers   6.8s
+
+total 27.0s
+```
+
+The running step counts up, so a slow agent is visibly slow rather than
+indistinguishable from a hang. A step that fails keeps its line, marked `[x]`
+with the reason under it, and the checklist stays on screen with the error so
+you can see how far it got.
+
 ### Writing one
 
 ```yaml
