@@ -6,6 +6,28 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.5.0 — 2026-07-27
+
+The popup says what it is doing while it does it.
+
+- Opening a Space is a clone, a worktree and several agents drawing their
+  inputs. The popup said `working...` for all of it, which looks exactly like a
+  popup that has hung.
+- Both popups now draw a checklist for the duration, replacing the form they
+  were sitting behind: `[ ]` for the step in flight, `[✓]` once it lands,
+  elapsed against each and a running total. Steps appear as they start, since
+  the list is not knowable up front -- a repo already on disk is not cloned,
+  and a setup's panes come from the file.
+- A step that fails keeps its line, marked `[x]` with the reason under it, and
+  the checklist stays on screen beside the error rather than disappearing with
+  it. How far a failed run got is most of the diagnosis.
+- Reported steps: cloning, the PR or issue lookup, the branch fetch, the
+  worktree (and its retry on a different base), building the panes, each pane's
+  agent or command by the name the setup file gave it, each `wait_for`, and the
+  prompt.
+- Nothing about a run without a popup changed: reporting is a nil-able
+  callback, so every CLI path takes exactly the code it did before.
+
 ## 0.4.3 — 2026-07-27
 
 codex is no longer prompted into its first-run screen ([#6]).
