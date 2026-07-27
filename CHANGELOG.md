@@ -6,6 +6,24 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.4.0 — 2026-07-27
+
+Agent panes take a command line ([#1], [#2]).
+
+- `model:` on an agent pane launches that agent with `--model <value>`, so a
+  setup can put an Opus orchestrator beside cheaper workers instead of
+  documenting "set your default to X" out of band.
+- `args:` is the general form — a list, so nothing has to be shell-quoted,
+  appended after the model flag and passed through verbatim. This is what
+  makes a reviewer genuinely read-only: `--permission-mode plan` for claude,
+  `--sandbox read-only` for codex. A prompt asking the agent not to edit
+  anything is a request the diff under review can argue with.
+- Both render as templates (`--add-dir {{.Path}}`), both are agent-pane only
+  and rejected at load time on a `command:` pane, and neither is validated —
+  a bad model name is the agent's own error to give, and an allowlist here
+  would go stale.
+- `--dry-run` prints the resolved argv.
+
 ## 0.3.2 — 2026-07-27
 
 Setups no longer half-build a Space in silence ([#3]).
@@ -52,4 +70,6 @@ Setups no longer half-build a Space in silence ([#3]).
 
 - First cut: the plugin, and `promote` for moving a pane into its own Space.
 
+[#1]: https://github.com/phin-tech/herdr-phin-util/issues/1
+[#2]: https://github.com/phin-tech/herdr-phin-util/issues/2
 [#3]: https://github.com/phin-tech/herdr-phin-util/issues/3
