@@ -6,6 +6,35 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.6.0 — 2026-07-29
+
+A Linear ticket finds its own repository, and the checkouts are offered to the
+jump launcher.
+
+- A Linear issue names no repository, and the plugin used to cut its worktree
+  in whatever directory the popup was fired from. A ticket for one project
+  pasted while standing in another built the branch in the wrong one.
+- Pasting a ticket now offers to take it rather than open it. Enter puts it in
+  hand, the project list answers "which repository", and the level below --
+  already a list of that repository's refs -- answers "from what". The branch
+  itself is never asked for: it comes from the URL slug, so the rows below are
+  bases rather than branches.
+- Taking the ticket is an explicit enter or tab. A URL parses as a valid
+  ticket several characters before it is finished, so acting on sight
+  swallowed the tail of a paste and read it back as a different reference.
+- While a ticket is held, enter on a project row means "this is the
+  repository" rather than "open this", rows with no directory behind them are
+  not offered, and esc gives the ticket up before the popup.
+- The prompt and the setup see the ticket, not the checkout: `{{.Issue}}` and
+  `{{.URL}}` render, and a setup with `applies_to: [linear]` can now also be
+  scoped by `repos:` -- impossible before, when nothing knew the repository.
+- `jump-rows` prints the checkouts as rows for the herdr-phin-jump launcher,
+  registered through `herdr-jump.toml`. Neither plugin depends on the other:
+  Herdr ignores the file, and jump finds it through the plugin root that
+  `plugin.list` already reports.
+- The CLI's own `open <linear-url>` is unchanged -- inside a repository, the
+  working directory is a fair reading of where the work goes.
+
 ## 0.5.1 — 2026-07-28
 
 The picker's filter now ranks what it matched.
