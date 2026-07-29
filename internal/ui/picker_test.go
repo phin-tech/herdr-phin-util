@@ -39,7 +39,7 @@ func labels(candidates []session.Candidate) []string {
 	return out
 }
 
-// Filtering narrows the list without reordering it, so the Spaces-then-
+// Rows in the same tier keep their original order, so the Spaces-then-
 // projects grouping survives typing.
 func TestPickerFilterPreservesOrder(t *testing.T) {
 	p := testPicker(t,
@@ -82,6 +82,41 @@ func TestPickerFilterMatchesPath(t *testing.T) {
 
 	if len(p.filtered) != 1 || p.filtered[0].Label != "one" {
 		t.Errorf("got %v, want just one", labels(p.filtered))
+	}
+}
+
+// Every project lives under the same few path components, so a subsequence
+// query matches almost every path by accident. Naming something by label has
+// to beat that.
+func TestPickerFilterDropsPathMatchesWhenALabelMatches(t *testing.T) {
+	p := testPicker(t,
+		space("slack-personal-agent", "/src/github.com/phin-tech/slack-personal-agent"),
+		project("orca", "/src/github.com/phin-tech/orca"),
+		project("dotfiles", "/src/github.com/sam-phinizy/dotfiles"),
+	)
+
+	typeInto(p, "orca")
+
+	if len(p.filtered) != 1 || p.filtered[0].Label != "orca" {
+		t.Errorf("got %v, want just orca", labels(p.filtered))
+	}
+}
+
+// Better matches sort first even though the list started the other way round.
+func TestPickerFilterRanksBetterMatchesFirst(t *testing.T) {
+	p := testPicker(t,
+		project("odds-and-ends-recipe-archive", "/src/o"), // subsequence
+		project("the-orca-book", "/src/t"),                // substring
+		project("orca-tools", "/src/ot"),                  // prefix
+		project("orca", "/src/orca"),                      // exact
+	)
+
+	typeInto(p, "orca")
+
+	got := labels(p.filtered)
+	want := []string{"orca", "orca-tools", "the-orca-book", "odds-and-ends-recipe-archive"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
 

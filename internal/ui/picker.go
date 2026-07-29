@@ -595,10 +595,6 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
-// applyFilter narrows the list without reordering it. fzf would rank by score,
-// but the order here is meaningful -- open Spaces before checkouts -- and
-// having rows jump between positions as you type costs more than ranking
-// gains.
 // applyFilter decides what the rows are, from what has been typed.
 //
 // This is the whole idea behind one input: the query's *shape* selects the
@@ -623,12 +619,7 @@ func (p *Picker) applyFilter() {
 		return
 	}
 
-	out := make([]session.Candidate, 0, len(p.all)+1)
-	for _, c := range p.all {
-		if matches(query, c) {
-			out = append(out, c)
-		}
-	}
+	out := rank(query, p.all)
 	// Inside a repository, text that names no existing branch becomes an
 	// offer to create it. That is how a new branch gets made without a
 	// separate mode to enter -- you are already typing its name.
@@ -668,10 +659,83 @@ func hasExactBranch(candidates []session.Candidate, query string) bool {
 	return false
 }
 
-// matches is a subsequence test against the label and its detail line, so
-// "phnutl" finds herdr-phin-util and "srcphin" finds it by path.
-func matches(query string, c session.Candidate) bool {
-	return subsequence(strings.ToLower(query), strings.ToLower(c.Label+" "+c.Detail))
+// Match tiers, best first. The gap between tierLabelSubsequence and tierDetail
+// is the important one: a query that names something by label should never be
+// buried under rows that only matched because every path contains
+// "~/src/github.com".
+const (
+	tierExact = iota
+	tierPrefix
+	tierSubstring
+	tierLabelSubsequence
+	tierDetail
+	tierNone
+)
+
+// rank filters and orders the candidates for a non-empty query.
+//
+// The empty query is left alone by the caller, because that order is meaningful
+// -- open Spaces before checkouts. Once something has been typed, though, the
+// list is being rebuilt from scratch on every keystroke anyway, and burying the
+// thing you named under thirteen incidental path matches costs more than the
+// stability is worth.
+//
+// Detail matches are a fallback rather than a tier: they only survive if
+// nothing matched by label, so "srcphin" still finds a repo by path without
+// every loose path match riding along on a query that already named a label.
+func rank(query string, all []session.Candidate) []session.Candidate {
+	q := strings.ToLower(strings.TrimSpace(query))
+
+	type scored struct {
+		c    session.Candidate
+		tier int
+	}
+	var hits []scored
+	best := tierNone
+	for _, c := range all {
+		t := tierOf(q, c)
+		if t == tierNone {
+			continue
+		}
+		if t < best {
+			best = t
+		}
+		hits = append(hits, scored{c, t})
+	}
+
+	out := make([]session.Candidate, 0, len(hits)+1)
+	// Two passes rather than a sort: there are only a handful of tiers, and
+	// walking them in order keeps each tier in its original -- meaningful --
+	// order for free.
+	for tier := tierExact; tier <= tierDetail; tier++ {
+		if tier == tierDetail && best < tierDetail {
+			break
+		}
+		for _, h := range hits {
+			if h.tier == tier {
+				out = append(out, h.c)
+			}
+		}
+	}
+	return out
+}
+
+// tierOf scores one candidate against an already-lowercased query.
+func tierOf(query string, c session.Candidate) int {
+	label := strings.ToLower(c.Label)
+	switch {
+	case label == query:
+		return tierExact
+	case strings.HasPrefix(label, query):
+		return tierPrefix
+	case strings.Contains(label, query):
+		return tierSubstring
+	case subsequence(query, label):
+		return tierLabelSubsequence
+	case subsequence(query, strings.ToLower(c.Detail)):
+		return tierDetail
+	}
+	return tierNone
 }
 
 // subsequence indexes the query by rune rather than byte: a path with an
