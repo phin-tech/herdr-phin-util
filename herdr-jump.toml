@@ -1,0 +1,17 @@
+# Optional: rows this plugin contributes to the herdr-phin-jump launcher.
+#
+# Herdr ignores this file. jump finds it through the plugin_root that
+# plugin.list reports, so it costs nothing when jump is not installed -- and
+# jump costs nothing when this plugin is not installed. Neither is a dependency
+# of the other.
+#
+# Eager rather than keyword-scoped: the point is that typing "orca" from a cold
+# launcher finds the checkout, without having to remember a word first.
+
+[[provider]]
+id = "projects"
+title = "Projects"
+command = ["bin/herdr-phin-util", "jump-rows"]
+# Generous, because this walks the configured roots looking for .git. It is
+# still a bound: a launcher that stalls is worse than one missing these rows.
+timeout_ms = 3000

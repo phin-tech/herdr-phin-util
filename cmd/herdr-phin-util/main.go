@@ -45,6 +45,7 @@ usage:
   herdr-phin-util handoff [--session ID] [--label TEXT] [--cwd PATH]
                          [--dry-run] [--force]
                                        resume a Claude session in a new Space
+  herdr-phin-util jump-rows            print checkouts as herdr-phin-jump rows
   herdr-phin-util version
 
 promote targets the focused pane when no id is given.
@@ -107,6 +108,8 @@ func main() {
 		os.Exit(runProject(args[1:]))
 	case "handoff":
 		os.Exit(runHandoff(args[1:]))
+	case "jump-rows":
+		os.Exit(runJumpRows())
 	case "promote":
 		var target string
 		if len(args) > 1 {
