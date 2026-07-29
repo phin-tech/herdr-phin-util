@@ -74,6 +74,13 @@ func SetupSubject(c Candidate) setup.Subject {
 		sub.Kind = c.Target.Kind
 		sub.Owner = c.Target.Owner
 		sub.Repo = c.Target.Repo
+	case KindLinearBase:
+		// Both halves are known here and neither would be on its own: the kind
+		// comes from the ticket, and the repository from the checkout that was
+		// picked for it. This is the only row where a linear setup can also be
+		// scoped by repos:.
+		sub.Kind = c.Target.Kind
+		sub.Repo = sub.RepoName
 	case KindProject, KindSpace:
 		sub.Kind = target.KindProject
 		sub.Repo = sub.RepoName

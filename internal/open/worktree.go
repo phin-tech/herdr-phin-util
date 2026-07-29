@@ -32,6 +32,12 @@ type WorktreeRequest struct {
 	// Existing skips worktree.create for a worktree already on disk. Creating
 	// one that exists fails, and the error is less clear than not trying.
 	Existing bool
+	// Target is the reference this worktree is being cut for, when there is
+	// one. A worktree picked off disk has no reference behind it and leaves
+	// this nil, which is the ordinary case; a Linear ticket routed through the
+	// picker sets it so the prompt, the setup match and the Space's kind are
+	// the ticket's rather than a checkout's.
+	Target *target.Target
 }
 
 // RunWorktree opens a Space on a worktree, creating the worktree and its
@@ -95,6 +101,9 @@ func RunWorktree(deps Deps, cfg *config.Settings, req WorktreeRequest, opts Opti
 	}
 
 	tgt := target.Target{Kind: target.KindProject, Text: label}
+	if req.Target != nil {
+		tgt = *req.Target
+	}
 	out := Outcome{
 		Kind:        tgt.Kind,
 		Label:       label,

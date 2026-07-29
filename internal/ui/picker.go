@@ -67,6 +67,20 @@ type Picker struct {
 	// Spaces by label without another round trip.
 	workspaces []herdr.Workspace
 
+	// ticket is a pasted Linear issue waiting for a repository. Unlike a pull
+	// request, a ticket names none, so it cannot be acted on where it was
+	// pasted -- it is held here while the project list answers "which repo",
+	// and the level below answers "from what".
+	//
+	// It is taken out of the filter box on recognition rather than left in it:
+	// a URL sitting in the box would be filtering the project list against
+	// itself, which is exactly the wrong thing at the moment you want to type
+	// a repository's name.
+	ticket target.Target
+	// worktreeAll is the worktree level as it was listed, kept so dropping a
+	// ticket restores the branches rather than re-reading the repository.
+	worktreeAll []session.Candidate
+
 	all      []session.Candidate
 	filtered []session.Candidate
 	// linkMode records that the current rows came from resolving a pasted
@@ -118,7 +132,6 @@ type Picker struct {
 // opens onto an empty box.
 func NewPicker(cfg *config.Settings, deps session.Deps, focuser session.Focuser, candidates []session.Candidate) *Picker {
 	filter := textinput.New()
-	filter.Placeholder = filterPlaceholder(levelProjects)
 	filter.Prompt = "> "
 	filter.Focus()
 
@@ -140,6 +153,7 @@ func NewPicker(cfg *config.Settings, deps session.Deps, focuser session.Focuser,
 		width:      80,
 		height:     24,
 	}
+	p.filter.Placeholder = p.filterPlaceholder(levelProjects)
 	p.applyFilter()
 	return p
 }
@@ -163,18 +177,29 @@ func NewWorktreePicker(cfg *config.Settings, deps session.Deps, focuser session.
 	p.level = levelWorktrees
 	p.repo = repo
 	p.rootLevel = levelWorktrees
-	p.filter.Placeholder = filterPlaceholder(levelWorktrees)
+	// This level was handed in rather than listed, so record it as the listing
+	// a ticket would reinterpret and a dropped ticket would restore.
+	p.worktreeAll = candidates
+	p.filter.Placeholder = p.filterPlaceholder(levelWorktrees)
 	return p
 }
 
-// filterPlaceholder names what the current level is a list of.
-func filterPlaceholder(l level) string {
+// filterPlaceholder names what the current level is a list of. A held ticket
+// changes both lists into something else, so it changes what they are called.
+func (p *Picker) filterPlaceholder(l level) string {
+	holding := p.ticket.Kind != ""
 	switch l {
 	case levelWorktrees:
+		if holding {
+			return "filter the bases " + p.ticket.Branch() + " could start from"
+		}
 		return "filter branches, or type a new branch name"
 	case levelSetups:
 		return "filter setups"
 	default:
+		if holding {
+			return "which repository does " + p.ticket.Issue + " belong to?"
+		}
 		return "filter, or paste a PR / issue / Linear link"
 	}
 }
@@ -215,7 +240,7 @@ func (p *Picker) enterSetups() {
 	p.all = rows
 	p.err = nil
 	p.status = ""
-	p.filter.Placeholder = filterPlaceholder(levelSetups)
+	p.filter.Placeholder = p.filterPlaceholder(levelSetups)
 	p.filter.SetValue("")
 	p.applyFilter()
 }
@@ -232,7 +257,7 @@ func (p *Picker) leaveSetups() {
 	p.pending = session.Candidate{}
 	p.level = s.level
 	p.all = s.all
-	p.filter.Placeholder = filterPlaceholder(s.level)
+	p.filter.Placeholder = p.filterPlaceholder(s.level)
 	p.err = nil
 	p.status = ""
 	p.filter.SetValue(s.filter)
@@ -303,8 +328,9 @@ func (p *Picker) descend(c session.Candidate) tea.Cmd {
 func (p *Picker) ascend() {
 	p.level = levelProjects
 	p.repo = session.RepoContext{}
+	p.worktreeAll = nil
 	p.all = p.projectAll
-	p.filter.Placeholder = filterPlaceholder(levelProjects)
+	p.filter.Placeholder = p.filterPlaceholder(levelProjects)
 	p.err = nil
 	p.status = ""
 	p.filter.SetValue(p.projectFilter)
@@ -393,8 +419,8 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.projectCursor = p.cursor
 		p.level = levelWorktrees
 		p.repo = msg.repo
-		p.all = msg.candidates
-		p.filter.Placeholder = filterPlaceholder(levelWorktrees)
+		p.setWorktreeRows(msg.candidates)
+		p.filter.Placeholder = p.filterPlaceholder(levelWorktrees)
 		p.filter.SetValue("")
 		p.applyFilter()
 		return p, nil
@@ -406,7 +432,7 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.err = msg.err
 			return p, nil
 		}
-		p.all = msg.candidates
+		p.setWorktreeRows(msg.candidates)
 		p.applyFilter()
 		return p, nil
 
@@ -519,6 +545,12 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.ascend()
 			return p, nil
 		}
+		// A ticket is the last thing esc gives up, because it is the only
+		// state here that was pasted rather than navigated to.
+		if p.ticket.Kind != "" {
+			p.dropTicket()
+			return p, nil
+		}
 		p.quitting = true
 		return p, tea.Quit
 
@@ -536,6 +568,11 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// flagship path one pass: paste a PR, tab, pick the review layout, enter.
 	case "tab", "ctrl+w":
 		if p.level == levelSetups {
+			return p, nil
+		}
+		// A ticket has a question underneath it before it has a layout: which
+		// repository. Taking it is what "deeper" means on that row.
+		if c, ok := p.selected(); ok && p.takeTicket(c) {
 			return p, nil
 		}
 		// Only the project level has a repository underneath it. A Space row
@@ -623,12 +660,103 @@ func (p *Picker) applyFilter() {
 	// Inside a repository, text that names no existing branch becomes an
 	// offer to create it. That is how a new branch gets made without a
 	// separate mode to enter -- you are already typing its name.
-	if p.level == levelWorktrees && !hasExactBranch(p.all, query) {
+	// Not while a ticket is held: its branch is already named, so what is
+	// being filtered here are bases, and a row offering to invent a branch
+	// called "main" would be an offer to do the wrong thing entirely.
+	if p.level == levelWorktrees && p.ticket.Kind == "" && !hasExactBranch(p.all, query) {
 		out = append(out, session.NewBranchCandidate(p.repo, query))
 	}
 	p.filtered = out
 	p.cursor = 0
 	p.offset = 0
+}
+
+// setWorktreeRows installs a freshly listed worktree level, as branches or as
+// bases depending on whether a ticket is waiting for one. Both listings arrive
+// the same way -- a descent and a fetch -- so the choice is made in one place
+// rather than at each of them.
+func (p *Picker) setWorktreeRows(candidates []session.Candidate) {
+	p.worktreeAll = candidates
+	if p.ticket.Kind != "" {
+		p.all = session.LinearBaseRows(p.repo, p.ticket, candidates)
+		return
+	}
+	p.all = candidates
+}
+
+// isTicketRow reports whether a row is a Linear issue that still needs a
+// repository. A ticket with a Space already open is not one: ResolveLink has
+// answered it outright with something to switch to, and asking which
+// repository to build a second one in would be offering to duplicate what is
+// already running.
+func isTicketRow(c session.Candidate) bool {
+	return c.Kind == session.KindLink &&
+		c.Target.Kind == target.KindLinear &&
+		c.Target.Branch() != ""
+}
+
+// takeTicket accepts a resolved Linear row as the pending piece of work,
+// reporting whether it did.
+//
+// This is deliberately an act rather than a consequence of the text parsing.
+// A URL becomes a valid ticket several characters before it is finished --
+// ".../issue/ENG-1" already parses -- so taking one the moment it parsed would
+// swallow the rest of the paste and reinterpret the tail as a fresh query.
+// Enter and tab both mean "yes, that one", and nothing happens until one of
+// them is pressed.
+//
+// Taking one clears the filter box, which is what makes the ticket feel put
+// away rather than still being typed, and frees the box for the question it is
+// now asking. At the worktree level the list is rebuilt in place -- that level
+// is already a repository, so the only thing left open is the base.
+func (p *Picker) takeTicket(c session.Candidate) bool {
+	if !isTicketRow(c) {
+		return false
+	}
+
+	p.ticket = c.Target
+	p.linkMode = false
+	p.filter.SetValue("")
+
+	if p.level == levelWorktrees {
+		p.all = session.LinearBaseRows(p.repo, p.ticket, p.worktreeAll)
+	} else {
+		// The list was collapsed to the one link row while the URL sat in the
+		// box. Put the projects back -- but only the ones that are a
+		// repository. The question is "which repo", and a row with nothing to
+		// descend into cannot answer it; leaving it in would mean an Enter
+		// that quietly switched somewhere and dropped the ticket on the way.
+		p.all = keepRepos(p.projectAll)
+	}
+	p.filter.Placeholder = p.filterPlaceholder(p.level)
+	p.applyFilter()
+	return true
+}
+
+// keepRepos narrows a project list to the rows that have a repository behind
+// them, which is every row except a Space whose panes report no directory.
+func keepRepos(all []session.Candidate) []session.Candidate {
+	out := make([]session.Candidate, 0, len(all))
+	for _, c := range all {
+		if canDescend(c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// dropTicket puts back the list the ticket reinterpreted. It is what esc does
+// first at either level, so a ticket pasted by accident costs one key rather
+// than the whole popup.
+func (p *Picker) dropTicket() {
+	p.ticket = target.Target{}
+	if p.level == levelWorktrees {
+		p.all = p.worktreeAll
+	} else {
+		p.all = p.projectAll
+	}
+	p.filter.Placeholder = p.filterPlaceholder(p.level)
+	p.applyFilter()
 }
 
 // parseQuery classifies what has been typed.
@@ -822,6 +950,19 @@ func (p *Picker) submit() tea.Cmd {
 		return nil
 	}
 
+	// A ticket is not something to open: it does not say where. Enter takes it
+	// in hand and asks, which is the only forward move the row has.
+	if p.takeTicket(candidate) {
+		return nil
+	}
+
+	// And while one is held, a project row is an answer to that question
+	// rather than a Space to open. Enter and tab mean the same thing here,
+	// because there is only one thing picking a repository could mean.
+	if p.ticket.Kind != "" && p.level == levelProjects && canDescend(candidate) {
+		return p.descend(candidate)
+	}
+
 	agent := p.agentOn
 	opts := open.Options{Agent: &agent}
 
@@ -917,7 +1058,7 @@ func startsAnAgent(c session.Candidate) bool {
 // carries its own parsed target; everything else is a checkout, which uses the
 // project template.
 func promptTargetFor(c session.Candidate) target.Target {
-	if c.Kind == session.KindLink {
+	if c.Kind == session.KindLink || c.Kind == session.KindLinearBase {
 		return c.Target
 	}
 	return target.Target{Kind: target.KindProject, Text: c.Label}
@@ -929,6 +1070,8 @@ func statusFor(c session.Candidate) string {
 		return "switching to " + c.Label + "..."
 	case session.KindNewBranch:
 		return "creating branch " + c.Label + "..."
+	case session.KindLinearBase:
+		return "creating branch " + c.Branch + " " + c.Label + "..."
 	case session.KindRemoteBranch:
 		return "fetching " + c.Label + "..."
 	default:

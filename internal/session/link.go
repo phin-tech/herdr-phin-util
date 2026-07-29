@@ -127,10 +127,13 @@ func linkDetail(tgt target.Target) string {
 	case target.KindGitHubIssue:
 		return fmt.Sprintf("issue in %s/%s — new branch", tgt.Owner, tgt.Repo)
 	case target.KindLinear:
+		// A ticket names no repository, so unlike every other reference this
+		// row cannot say what it would build -- only what it would build once
+		// it is told where.
 		if b := tgt.Branch(); b != "" {
-			return "Linear issue — new branch " + b
+			return "Linear issue — choose a repository for " + b
 		}
-		return "Linear issue — new branch"
+		return "Linear issue — choose a repository"
 	default:
 		return ""
 	}

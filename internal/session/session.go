@@ -55,6 +55,10 @@ type Candidate struct {
 	// Branch is set at the worktree level: the branch the row would check out,
 	// or already has.
 	Branch string
+	// Base is set on a KindLinearBase row: the ref Branch would be cut from.
+	// Every other creating kind derives its base from its own Kind, which is
+	// why this is the only row that has to carry one.
+	Base string
 	// Target is set on a KindLink row: the parsed reference the row came from,
 	// carried through so acting on it needs no second parse.
 	Target target.Target

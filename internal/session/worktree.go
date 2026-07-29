@@ -209,6 +209,9 @@ func OpenWorktree(deps Deps, cfg *config.Settings, repo RepoContext, c Candidate
 			Label:    worktreeSpaceLabel(repo, c.Label),
 		}, opts)
 
+	case KindLinearBase:
+		return OpenLinearBranch(deps, cfg, repo, c, opts)
+
 	case KindNewBranch:
 		base := repo.DefaultBranch
 		if base != "" {

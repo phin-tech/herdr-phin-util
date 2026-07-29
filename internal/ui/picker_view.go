@@ -116,11 +116,23 @@ func (p *Picker) viewTitle() string {
 			titleStyle.Render("setup")
 	}
 	if p.level == levelWorktrees {
-		return titleStyle.Render("Open a project") +
+		return p.viewRoot() +
 			dimStyle.Render(" › ") +
 			titleStyle.Render(p.repo.Name)
 	}
-	return titleStyle.Render("Open a project")
+	return p.viewRoot()
+}
+
+// viewRoot names what the picker is doing. A pending ticket replaces the title
+// outright rather than sitting beside it: while one is held, every row on
+// screen means something in terms of that ticket, and a breadcrumb that still
+// said "Open a project" would be describing the level before last.
+func (p *Picker) viewRoot() string {
+	if p.ticket.Kind == "" {
+		return titleStyle.Render("Open a project")
+	}
+	return titleStyle.Render(p.ticket.Issue) +
+		dimStyle.Render(" "+p.ticket.Branch())
 }
 
 func (p *Picker) countSummary() string {
@@ -224,6 +236,8 @@ func rowTag(k session.Kind) string {
 		return remoteTagStyle.Render("remote")
 	case session.KindNewBranch:
 		return createTagStyle.Render("create")
+	case session.KindLinearBase:
+		return createTagStyle.Render("base  ")
 	case session.KindLink:
 		return createTagStyle.Render("link  ")
 	case session.KindClone:
@@ -334,12 +348,27 @@ func (p *Picker) viewAgentToggle() string {
 		// is not what will be started.
 		return "  " + box + dimStyle.Render(" the setup decides what runs")
 	}
-	if c, ok := p.selected(); ok && c.Kind == session.KindSpace {
+	if c, ok := p.selected(); ok && c.Kind == session.KindSpace && p.ticket.Kind == "" {
 		// Switching to something already running never starts an agent, so
-		// the toggle would otherwise look like it was being ignored.
+		// the toggle would otherwise look like it was being ignored. With a
+		// ticket held nothing is being switched to -- the row is a repository
+		// to cut the ticket's branch in, and the agent will start after all.
 		text += dimStyle.Render("  (not used when switching)")
 	}
 	return "  " + text
+}
+
+// enterLabel names what Enter would actually do. It is "open" almost
+// everywhere, and saying so on the two rows where Enter asks a question
+// instead would be the hint contradicting the key.
+func (p *Picker) enterLabel() string {
+	if c, ok := p.selected(); ok && isTicketRow(c) {
+		return " choose repo  "
+	}
+	if p.ticket.Kind != "" && p.level == levelProjects {
+		return " choose repo  "
+	}
+	return " open  "
 }
 
 // tabHint names what tab would do on the highlighted row, and reports false
@@ -349,6 +378,9 @@ func (p *Picker) tabHint() (string, bool) {
 	c, ok := p.selected()
 	if !ok {
 		return "", false
+	}
+	if isTicketRow(c) {
+		return " choose repo  ", true
 	}
 	if p.level == levelProjects && canDescend(c) {
 		if c.Kind == session.KindClone {
@@ -370,7 +402,7 @@ func (p *Picker) viewPickerHint() string {
 	}
 
 	hint := keyStyle.Render("↑↓") + dimStyle.Render(" move  ") +
-		keyStyle.Render("enter") + dimStyle.Render(" open  ")
+		keyStyle.Render("enter") + dimStyle.Render(p.enterLabel())
 
 	if p.level == levelSetups {
 		// Nothing else applies here: the row is already chosen, and this level
