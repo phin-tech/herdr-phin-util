@@ -6,6 +6,21 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.5.1 — 2026-07-28
+
+The picker's filter now ranks what it matched.
+
+- Typing a project's name left it eighth of thirteen rows, under things it had
+  nothing to do with. The match ran over the label and the path as one string,
+  and every row's path contains `~/src/github.com/...` -- so a four-letter
+  subsequence like `orca` was nearly free and barely narrowed anything.
+- Matching is label-first. The path is a fallback that only survives when
+  nothing matched by label, so filtering by where something lives still works
+  without every loose path match riding along on a query that named a label.
+- Matches sort exact, then label prefix, then substring, then subsequence.
+  Within a tier rows keep the order they had, and an empty query is left
+  exactly as it was -- open Spaces before checkouts.
+
 ## 0.5.0 — 2026-07-27
 
 The popup says what it is doing while it does it.
