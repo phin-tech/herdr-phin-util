@@ -240,6 +240,15 @@ type PRLookup interface {
 	// fake need not implement anything fancier than the chain a given test
 	// wants back.
 	Stack(owner, repo string, number int) ([]gh.StackPR, error)
+	// Stacks resolves every path from number's chain to a tip -- see
+	// gh.Client.Stacks. Unlike Stack it never refuses on a fork, which is
+	// exactly why it, not Stack, is what answers "is this stacked" for
+	// applies_to: [github_stack] matching (session.SetupRows -- see
+	// setup.Subject.Stacked): matching is a yes/no question ("does any path
+	// have 2+ layers"), and a fork must not fail it just because the
+	// unrelated question of *which* chain to build for_each's layers list
+	// from is ambiguous.
+	Stacks(owner, repo string, number int) ([][]gh.StackPR, error)
 }
 
 // Fetcher makes a remote branch available locally. gitcmd.Runner implements

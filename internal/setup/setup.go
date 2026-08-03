@@ -146,15 +146,14 @@ type Pane struct {
 // answers to the same question ("where does this tab live"), not a
 // precedence rule, and Validate rejects the combination outright.
 //
-// This is stage one of #12 -- an ordinary tab, no for_each in sight. The
-// shape is written to accept for_each without rework: Ref already renders as
-// a per-iteration template (see ResolveData's tabCwd handling, which this
-// follows exactly), so a for_each tab whose Ref varies per element already
-// works once stage two adds the two validation rules that belong to it: a
-// constant Ref on a for_each tab (every element would build an identical
-// worktree, which is always a mistake), and detach: false on a for_each tab
-// (every element would fight over the same branch checkout). Neither rule is
-// implemented here on purpose.
+// Ref renders as a per-iteration template (see ResolveData's tabCwd handling,
+// which this follows exactly), so a for_each tab whose Ref varies per element
+// builds one worktree per element -- which is the whole point of #12, and
+// what replaces a script that built them by hand. Two rules in Validate guard
+// the ways that goes wrong, both scoped to repeated tabs: a constant Ref
+// (every element would build an identical worktree, so the element went
+// unused) and detach: false (every element would fight over the same branch
+// checkout, and git refuses the second).
 type WorktreeSpec struct {
 	// Ref is a Go text/template, rendered against the same per-iteration data
 	// a tab's Cwd is -- a branch, a tag, or a bare commit SHA.
@@ -427,6 +426,7 @@ var allKinds = []target.Kind{
 	target.KindGitHubPR,
 	target.KindGitHubIssue,
 	target.KindGitHubRepo,
+	target.KindGitHubStack,
 	target.KindLinear,
 	target.KindPlain,
 	target.KindProject,
@@ -451,6 +451,28 @@ type Subject struct {
 	// directory is keyed by. It is often but not always the same as Repo --
 	// a worktree directory can be named for its branch.
 	RepoName string
+	// Stacked says whether this subject -- when Kind is KindGitHubPR -- has
+	// 2 or more layers in its baseRefName chain (gh.Client.Stacks; any path
+	// to a tip counts, so a fork does not turn this false -- see #14's Q4).
+	// It is meaningless, and always left false, for every other Kind.
+	//
+	// This is the whole mechanism behind applies_to: [github_stack], and it
+	// is worth being explicit about why it lives here rather than in Parse
+	// or in target.Kind itself: whether a pull request is stacked is not
+	// something a URL says on its own -- it takes a `gh` round trip to find
+	// out, and Matches is pure and runs with no network available to it. So
+	// "is this stacked" cannot be a tie Matches or Parse arbitrates; it has
+	// to already be a known fact by the time a Subject reaches Matches. The
+	// only caller in this codebase that resolves it is session.SetupRows,
+	// and only when a candidate setup's applies_to actually mentions
+	// github_stack -- resolving it unconditionally would mean a gh pr list
+	// call on every picker keystroke for every pull request, stacked or not.
+	//
+	// See Matches for the refinement rule this field exists to express: a
+	// stacked PR matches both applies_to: [github_pr] and
+	// applies_to: [github_stack]; a one-layer chain (a lone PR) is not a
+	// stack and matches only the first.
+	Stacked bool
 }
 
 // ForEachNames returns the list names this setup's tabs repeat over --
@@ -480,7 +502,7 @@ func (s Setup) ForEachNames() []string {
 
 // Matches reports whether a setup should be offered for a subject.
 func (s Setup) Matches(sub Subject) bool {
-	if len(s.AppliesTo) > 0 && sub.Kind != "" && !contains(s.AppliesTo, string(sub.Kind)) {
+	if len(s.AppliesTo) > 0 && sub.Kind != "" && !matchesAppliesTo(s.AppliesTo, sub) {
 		return false
 	}
 	if s.ScopedRepo != "" && !matchesRepoName(s.ScopedRepo, sub) {
@@ -495,6 +517,27 @@ func (s Setup) Matches(sub Subject) bool {
 		}
 	}
 	return true
+}
+
+// matchesAppliesTo is the refinement rule github_stack exists for: a
+// github_stack in a setup's applies_to is satisfied by a subject whose Kind
+// is KindGitHubPR and whose Stacked is true -- it never matches anything
+// else, since only a pull request can be part of a stack. A github_pr in
+// applies_to, meanwhile, is satisfied by any pull request, stacked or not --
+// stackedness narrows what also matches, it does not remove github_pr's own
+// claim. That is what makes the two spellings overlap on a stacked PR rather
+// than compete for it (see Subject.Stacked for why that overlap is the
+// answer and not a bug to resolve).
+func matchesAppliesTo(appliesTo []string, sub Subject) bool {
+	for _, kind := range appliesTo {
+		if kind == string(sub.Kind) {
+			return true
+		}
+		if target.Kind(kind) == target.KindGitHubStack && sub.Kind == target.KindGitHubPR && sub.Stacked {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesRepoName checks a repos/<...>/ directory's implied scope. The
@@ -538,15 +581,6 @@ func matchAny(patterns, candidates []string) bool {
 			if strings.EqualFold(pattern, candidate) {
 				return true
 			}
-		}
-	}
-	return false
-}
-
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
 		}
 	}
 	return false

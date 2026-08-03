@@ -225,7 +225,7 @@ func (p *Picker) enterSetups() {
 		return
 	}
 
-	rows := session.SetupRows(p.deps.Setups, p.cfg, c)
+	rows := session.SetupRows(p.deps.Setups, p.deps.Open.PRs, p.cfg, c)
 
 	p.saved = &savedLevel{
 		level:  p.level,

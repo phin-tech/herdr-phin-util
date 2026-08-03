@@ -529,19 +529,50 @@ built would win.
 This is the plugin's one loop, deliberately: no `when:`, no conditionals, no
 nested `for_each`. Anything that needs actual logic is a `command:` pane.
 
-**Why `applies_to: [github_pr]` rather than a `github_stack` kind:** a target
-kind is chosen by parsing whatever was pasted, and there is no pasted-input
-shape that means "a stack" — you paste a pull request URL, and that parses as
-`github_pr` regardless of how many other pull requests are stacked on it. So
-rather than invent a kind nothing can name, any `github_pr` target can
-reconstruct the whole chain it belongs to, and a setup asks for that chain
-with `for_each: layers` the same way it would ask for anything else. A
-`github_stack` kind — mainly useful so the picker could show a stack as one
-row — is a separate, unbuilt feature tracked as issue #14.
+**`applies_to: [github_stack]` — a refinement of `github_pr`, not a rival
+kind:** a target kind is chosen by parsing whatever was pasted, and there is
+no pasted-input shape that means "a stack" — you paste a pull request URL,
+and that always parses as `github_pr`, whatever else is stacked on it.
+Whether it *is* stacked is not something the URL says; it takes a `gh` call
+to find out, and that answer arrives long after parsing has already decided
+the kind. So `github_stack` is not a second kind competing with `github_pr`
+for the same target — it is a fact looked up about one: "a `github_pr` whose
+chain has 2 or more layers." A stacked pull request matches **both**
+`applies_to: [github_pr]` and `applies_to: [github_stack]`; an unstacked one,
+including a standalone pull request with nothing built on it or under it —
+one layer is not a stack — matches only `github_pr`. Writing
+`applies_to: [github_stack]` on a setup that only makes sense for a stack (a
+`for_each: layers` layout, say) is what stops that setup from also being
+offered on an ordinary lone pull request, which used to need a runtime check
+instead of a type.
+
+The Space this builds always checks out the **tip** of the chain — the
+complete change, and where you'd run the tests — never any other layer;
+there is no setting to change that. A tab that needs a different layer's
+checkout uses `worktree: {ref: "{{.layer_head_sha}}"}` on a `for_each: layers`
+tab, same as any other per-layer worktree above.
+
+Resolving stackness costs a `gh` round trip (it asks GitHub's stack API or
+walks `baseRefName`, same as `layers` above), so it only runs when it can
+change an answer: at least one setup offered for the row actually names
+`github_stack` in its `applies_to`. A machine with no stack setups pays
+nothing extra opening any pull request. A `gh` failure while resolving this
+degrades to "not stacked" rather than erroring the row out — a network blip
+should not stop you opening a PR, only quietly not offer the stack-specific
+setup for it.
+
+One thing this is *not*: a change to what the picker lists. The picker still
+has no notion of a pull request as a row of its own — a PR row only exists
+when you paste its URL, and pasting one URL still yields exactly one row for
+exactly that pull request. `github_stack` only changes which `applies_to`
+setups get offered for that row; it does not add a "stack" row, collapse
+several pull request rows into one, or enumerate anything. (One row per
+stack in `pick` is the other half of issue #14 and remains unbuilt.)
 
 Narrow which targets a setup offers itself for with `applies_to`, `repos`
 (globs over `owner/repo`), and `branches` (globs). Valid `applies_to` kinds:
-`github_pr`, `github_issue`, `github_repo`, `linear`, `plain`, `project`.
+`github_pr`, `github_stack`, `github_issue`, `github_repo`, `linear`,
+`plain`, `project`.
 
 ### Where they live
 

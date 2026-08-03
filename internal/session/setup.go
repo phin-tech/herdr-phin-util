@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/phin-tech/herdr-phin-util/internal/open"
 	"github.com/phin-tech/herdr-phin-util/internal/setup"
 	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
@@ -24,7 +25,15 @@ const DefaultSetupLabel = "default"
 // The default leads because it is the common answer and the one Enter already
 // gives you -- the setup level exists to offer the alternatives, not to make
 // you re-choose the norm.
-func SetupRows(load SetupLoader, cfg AgentKindNamer, c Candidate) []Candidate {
+//
+// prs resolves whether c's target is stacked (see stackedSubject) -- it is
+// open.PRLookup rather than a session-local interface because the picker
+// already has one wired up as deps.Open.PRs, and a second interface saying
+// the same thing would just be more surface to keep in sync. Pass nil from a
+// caller with no PR lookup available; a stack-aware setup then simply never
+// matches, the same way it would not match a repository this plugin knows
+// nothing about.
+func SetupRows(load SetupLoader, prs open.PRLookup, cfg AgentKindNamer, c Candidate) []Candidate {
 	rows := []Candidate{{
 		Kind:   KindSetup,
 		Label:  DefaultSetupLabel,
@@ -34,7 +43,8 @@ func SetupRows(load SetupLoader, cfg AgentKindNamer, c Candidate) []Candidate {
 		return rows
 	}
 
-	for _, s := range setup.Match(load(c.Path), SetupSubject(c)) {
+	setups := load(c.Path)
+	for _, s := range setup.Match(setups, stackedSubject(prs, setups, c)) {
 		row := Candidate{
 			Kind:   KindSetup,
 			Label:  s.Name,
@@ -92,6 +102,69 @@ func SetupSubject(c Candidate) setup.Subject {
 		sub.Repo = sub.RepoName
 	}
 	return sub
+}
+
+// stackedSubject is SetupSubject plus the one field it cannot fill in on its
+// own: Stacked, resolved here rather than there because resolving it can mean
+// a `gh` round trip, and SetupSubject is used nowhere else that would want to
+// pay for one.
+//
+// The gate is "did anyone ask for this?", the same shape resolveLists and
+// ForEachNames already apply to for_each's list sources (see
+// internal/open/stack.go): only when candidates -- the setups actually being
+// matched against -- has at least one applies_to: [github_stack] entry is
+// gh consulted at all. A machine with no stack setups pays nothing, on every
+// keystroke that opens the setup level, for every pull request it ever
+// visits.
+func stackedSubject(prs open.PRLookup, candidates []setup.Setup, c Candidate) setup.Subject {
+	sub := SetupSubject(c)
+	if sub.Kind != target.KindGitHubPR || prs == nil || !anyWantsStack(candidates) {
+		return sub
+	}
+	sub.Stacked = isStacked(prs, c.Target)
+	return sub
+}
+
+// anyWantsStack reports whether any candidate setup's applies_to mentions
+// github_stack -- the question that decides whether stackedSubject is worth
+// a network call at all.
+func anyWantsStack(candidates []setup.Setup) bool {
+	for _, s := range candidates {
+		for _, kind := range s.AppliesTo {
+			if kind == string(target.KindGitHubStack) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isStacked answers "does tgt's chain have 2 or more layers on any path to a
+// tip", using gh.Client.Stacks (plural) rather than Stack (singular)
+// precisely because Stacks never refuses on a fork -- see #14's Q4. Matching
+// is a yes/no question, and a fork must not make it error out from under an
+// otherwise ordinary github_pr row; whichever single chain matters is a
+// question only for_each's "layers" list (internal/open/stack.go) has to
+// answer, and only Stack refuses there.
+//
+// A gh failure -- rate limit, no network, an old gh with neither the native
+// nor the walk path working -- degrades to "not stacked" rather than
+// propagating an error SetupRows has nowhere to put: the setup level would
+// otherwise have to fail outright over a network blip that has nothing to do
+// with whether the row can be opened at all. Falling back to "not stacked"
+// costs exactly what it would cost before this feature existed -- the
+// github_stack setup is silently not offered, and github_pr ones still are.
+func isStacked(prs open.PRLookup, tgt target.Target) bool {
+	paths, err := prs.Stacks(tgt.Owner, tgt.Repo, tgt.Number)
+	if err != nil {
+		return false
+	}
+	for _, path := range paths {
+		if len(path) >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func pluralS(n int) string {

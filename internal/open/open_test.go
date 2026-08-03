@@ -152,6 +152,13 @@ type fakePRLookup struct {
 	stack      []gh.StackPR
 	stackErr   error
 	stackCalls int
+
+	// stacks/stacksErr back Stacks (plural) -- used only by the github_stack
+	// matching path (session.SetupRows), never by resolveLists, which is why
+	// it is a separate field rather than reusing stack above.
+	stacks      [][]gh.StackPR
+	stacksErr   error
+	stacksCalls int
 }
 
 func (f *fakePRLookup) LookupIssue(owner, repo string, number int) (gh.IssueInfo, error) {
@@ -176,6 +183,14 @@ func (f *fakePRLookup) Stack(owner, repo string, number int) ([]gh.StackPR, erro
 		return nil, f.stackErr
 	}
 	return f.stack, nil
+}
+
+func (f *fakePRLookup) Stacks(owner, repo string, number int) ([][]gh.StackPR, error) {
+	f.stacksCalls++
+	if f.stacksErr != nil {
+		return nil, f.stacksErr
+	}
+	return f.stacks, nil
 }
 
 type fakeFetcher struct {

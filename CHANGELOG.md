@@ -6,6 +6,48 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.12.0 — 2026-08-03
+
+`applies_to: [github_stack]` now means what it says ([#14]) — the part of
+that issue that was actually buildable.
+
+- A new target-kind spelling for `applies_to`: `github_stack`. It is not a
+  second kind rivalling `github_pr` for the same target — `target.Parse` is
+  pure string parsing with no network, so it structurally cannot know
+  whether a pull request is stacked, and nothing here makes it try. Instead
+  `github_stack` is a refinement, defined as "a `github_pr` whose chain has
+  2 or more layers": a stacked pull request now matches **both**
+  `applies_to: [github_pr]` and `applies_to: [github_stack]`, and an
+  unstacked one — including a lone pull request, since one layer is not a
+  stack — matches only the first. That is the whole fix for the runtime
+  check `applies_to: [github_pr]` used to stand in for: a stack-only setup
+  can now say so and simply not be offered on a row where it cannot work.
+- Resolving "is this stacked" is a `gh` round trip (`gh.Client.Stacks`,
+  shipped in 0.10.0), so it only runs when it can change an answer: the
+  picker's setup level now asks it once, and only when at least one
+  candidate setup for that row actually names `github_stack` — the same
+  "did anyone ask for this?" gate `layers` (0.8.0) already applies to its
+  own `gh pr list` call. A fork — more than one path to a tip — still counts
+  as stacked as long as any path has 2+ layers; the ambiguity about *which*
+  chain is a `for_each: layers` problem, not a matching one, so it is never
+  surfaced here. A `gh` failure degrades to "not stacked" rather than
+  failing the row open — a network blip should stop a stack-specific setup
+  from being offered, not stop the PR from opening at all.
+- The Space a `github_stack`-matched setup builds is identical to a
+  `github_pr` one in every other respect: same URL, same worktree, same
+  checkout — always the chain's tip, with no setting to pick another layer.
+  A tab that wants a different layer's checkout still reaches for
+  `worktree: {ref: "{{.layer_head_sha}}"}` on a `for_each: layers` tab, as
+  it already could.
+- **What this is not:** the picker still does not list pull requests. A row
+  only exists for one when its URL is pasted, and pasting one URL still
+  produces exactly one row for exactly that pull request — there is no
+  listing to collapse "four rows" out of, because those four rows were never
+  built. `github_stack` changes which `applies_to` setups a row offers, not
+  what rows exist. One row per stack in `pick` — the headline half of #14 —
+  remains unbuilt; it needs pull-request enumeration in the picker, which is
+  a separate, larger piece of work.
+
 ## 0.11.0 — 2026-08-03
 
 A `for_each` tab can give every layer its own checkout.

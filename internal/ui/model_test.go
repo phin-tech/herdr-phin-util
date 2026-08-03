@@ -89,6 +89,10 @@ func (f *fakeSession) Stack(owner, repo string, number int) ([]gh.StackPR, error
 	return nil, errors.New("not used in these tests")
 }
 
+func (f *fakeSession) Stacks(owner, repo string, number int) ([][]gh.StackPR, error) {
+	return nil, errors.New("not used in these tests")
+}
+
 func testConfig() *config.Settings {
 	return &config.Settings{
 		Agent: config.AgentSettings{Enabled: true, Kind: "claude"},

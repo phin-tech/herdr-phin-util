@@ -62,6 +62,59 @@ func TestMatches(t *testing.T) {
 	}
 }
 
+// TestMatchesGitHubStackIsARefinementNotARival pins Q1's answer down: a
+// github_stack in applies_to is not a rival to github_pr fighting over the
+// same subject, it is a narrower claim about the same one. See
+// Subject.Stacked's doc comment for why that has to be true -- Parse cannot
+// ever decide "is this stacked", so nothing here gets to arbitrate between
+// the two spellings either.
+func TestMatchesGitHubStackIsARefinementNotARival(t *testing.T) {
+	stackedPR := Subject{Kind: target.KindGitHubPR, Repo: "roux", Stacked: true}
+	lonePR := Subject{Kind: target.KindGitHubPR, Repo: "roux", Stacked: false}
+
+	t.Run("applies_to: [github_stack] matches a stacked PR", func(t *testing.T) {
+		if !(Setup{AppliesTo: []string{"github_stack"}}).Matches(stackedPR) {
+			t.Error("github_stack did not match a stacked pull request")
+		}
+	})
+
+	t.Run("applies_to: [github_pr] also matches a stacked PR -- the refinement property", func(t *testing.T) {
+		if !(Setup{AppliesTo: []string{"github_pr"}}).Matches(stackedPR) {
+			t.Error("github_pr stopped matching once the pull request turned out to be stacked")
+		}
+	})
+
+	t.Run("applies_to: [github_stack] does not match an unstacked PR", func(t *testing.T) {
+		if (Setup{AppliesTo: []string{"github_stack"}}).Matches(lonePR) {
+			t.Error("github_stack matched a pull request with only one layer")
+		}
+	})
+
+	// Q3: a one-layer chain is not a stack, so it stays a plain github_pr --
+	// which is exactly the lonePR case above, restated as its own name
+	// because it is the specific open question #14 asked about.
+	t.Run("a one-layer chain is not a stack", func(t *testing.T) {
+		if (Setup{AppliesTo: []string{"github_stack"}}).Matches(lonePR) {
+			t.Error("a lone pull request (Stacked: false) matched github_stack")
+		}
+		if !(Setup{AppliesTo: []string{"github_pr"}}).Matches(lonePR) {
+			t.Error("a lone pull request stopped being a plain github_pr")
+		}
+	})
+
+	t.Run("applies_to: [github_stack] does not match an issue, project or linear target", func(t *testing.T) {
+		for _, sub := range []Subject{
+			{Kind: target.KindGitHubIssue, Repo: "roux"},
+			{Kind: target.KindProject, Repo: "roux"},
+			{Kind: target.KindLinear},
+		} {
+			if (Setup{AppliesTo: []string{"github_stack"}}).Matches(sub) {
+				t.Errorf("github_stack matched a %s subject", sub.Kind)
+			}
+		}
+	})
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -160,6 +213,16 @@ func TestValidateAcceptsAWholeRealSetup(t *testing.T) {
 			{Name: "shell"},
 		},
 	}
+	if problems := s.Validate(); len(problems) != 0 {
+		t.Errorf("Validate() = %v, want none", problems)
+	}
+}
+
+// github_stack has to validate cleanly, not just match cleanly: a setup
+// author writing applies_to: [github_stack] should not be told it is an
+// unknown kind.
+func TestValidateAcceptsGitHubStackAsAKnownKind(t *testing.T) {
+	s := Setup{Name: "x", AppliesTo: []string{"github_stack"}, Tabs: []Tab{{Name: "a"}}}
 	if problems := s.Validate(); len(problems) != 0 {
 		t.Errorf("Validate() = %v, want none", problems)
 	}
