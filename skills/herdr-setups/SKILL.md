@@ -222,6 +222,12 @@ Each layer's fields, all strings: `layer` (1-based), `pr`, `title`, `url`,
 below this layer, empty for the bottom layer — it bases on the trunk, not on
 another open PR).
 
+A stack GitHub's own stacking tool created is read directly from GitHub's
+stack API in a single query; any other stack (plain git, rebase-based
+tooling, another editor) is reconstructed from `baseRefName` by the walk
+above. Both resolve to the identical per-layer fields, so which one answered
+is only visible if it misbehaves.
+
 **There is deliberately no *per-layer* `worktree` yet.** `worktree:` on a tab
 (below) landed and works on an ordinary tab -- one ref, one worktree -- but a
 `for_each` tab whose `ref` varies per element (one worktree per stacked PR

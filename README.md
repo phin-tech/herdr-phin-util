@@ -453,6 +453,12 @@ trunk, not on another open PR). A standalone pull request — based directly on
 the trunk, with nothing built on top of it — resolves to a one-element list
 rather than an error, so a setup does not need to special-case it.
 
+A stack GitHub itself created (its own stacking tool, not plain git) is read
+directly from GitHub's own stack API in one query; anything else — plain
+git, rebase-based tooling, another editor — is reconstructed from
+`baseRefName` the way it always has been. Both produce the exact same
+per-layer fields, so this only matters if it misbehaves.
+
 Only the names a setup's own `for_each` tabs mention are ever resolved — a
 setup with no `for_each` costs nothing extra, and `gh pr list` runs at most
 once per run even if several tabs repeat over `layers`.
