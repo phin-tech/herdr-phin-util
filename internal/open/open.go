@@ -228,11 +228,18 @@ func isAgentStartCode(err error, code string) bool {
 	return errors.As(err, &apiErr) && apiErr.Code == code
 }
 
-// PRLookup resolves a pull request's branch and title, and an issue's title.
-// gh.Client implements this against the real gh CLI.
+// PRLookup resolves a pull request's branch and title, an issue's title, and
+// (see internal/open/stack.go) the stack of open pull requests a pull
+// request belongs to. gh.Client implements this against the real gh CLI.
 type PRLookup interface {
 	LookupPR(owner, repo string, number int) (gh.PRInfo, error)
 	LookupIssue(owner, repo string, number int) (gh.IssueInfo, error)
+	// Stack resolves the chain of open pull requests number belongs to,
+	// bottom first -- see gh.Client.Stack for the walk. Only a github_pr
+	// setup naming for_each: layers ever calls this (resolveLists), so a
+	// fake need not implement anything fancier than the chain a given test
+	// wants back.
+	Stack(owner, repo string, number int) ([]gh.StackPR, error)
 }
 
 // Fetcher makes a remote branch available locally. gitcmd.Runner implements
@@ -581,7 +588,7 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 		if deps.Layout == nil {
 			return out, fmt.Errorf("setup %q needs a Herdr session to build panes in", opts.Setup.Name)
 		}
-		plan, panes, problems, err := applySetup(deps, cfg, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), data)
+		plan, panes, problems, err := applySetup(deps, cfg, tgt, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), data)
 		out.SetupName = plan.Name
 		out.SetupPanes = panes
 		out.Warnings = append(out.Warnings, problems...)

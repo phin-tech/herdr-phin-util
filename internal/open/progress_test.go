@@ -7,6 +7,7 @@ import (
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
 	"github.com/phin-tech/herdr-phin-util/internal/setup"
+	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
 
 // collect records what a run reported, in order, which is the thing a caller
@@ -33,7 +34,7 @@ func TestApplySetupReportsEveryPaneItFills(t *testing.T) {
 	var events []Event
 	deps := Deps{Session: &fakeSession{}, Layout: &fakeLayout{}, Progress: collect(&events)}
 
-	if _, _, _, err := applySetup(deps, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
+	if _, _, _, err := applySetup(deps, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +57,7 @@ func TestApplySetupClosesEveryStepItOpens(t *testing.T) {
 	var events []Event
 	deps := Deps{Session: &fakeSession{}, Layout: &fakeLayout{}, Progress: collect(&events)}
 
-	if _, _, _, err := applySetup(deps, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(deps, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -86,7 +87,7 @@ func TestApplySetupReportsAFailedPaneAsAFailedStep(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex", Prompt: "review", Submit: true},
 	}}}}
 
-	if _, _, _, err := applySetup(deps, &config.Settings{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(deps, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,7 +106,7 @@ func TestApplySetupReportsAFailedPaneAsAFailedStep(t *testing.T) {
 // special case at any call site.
 func TestApplySetupRunsWithoutAnyoneListening(t *testing.T) {
 	deps := Deps{Session: &fakeSession{}, Layout: &fakeLayout{}}
-	if _, _, _, err := applySetup(deps, &config.Settings{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(deps, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
 		t.Fatalf("a run with no Progress should behave exactly as before: %v", err)
 	}
 }

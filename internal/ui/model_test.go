@@ -76,6 +76,10 @@ func (f *fakeSession) LookupPR(owner, repo string, number int) (gh.PRInfo, error
 	return gh.PRInfo{}, errors.New("not used in these tests")
 }
 
+func (f *fakeSession) Stack(owner, repo string, number int) ([]gh.StackPR, error) {
+	return nil, errors.New("not used in these tests")
+}
+
 func testConfig() *config.Settings {
 	return &config.Settings{
 		Agent: config.AgentSettings{Enabled: true, Kind: "claude"},

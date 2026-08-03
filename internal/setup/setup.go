@@ -362,6 +362,31 @@ type Subject struct {
 	RepoName string
 }
 
+// ForEachNames returns the list names this setup's tabs repeat over --
+// deduplicated, trimmed, blank names skipped, in first-seen order so a
+// caller resolving them reports problems in the same order the file lists
+// them.
+//
+// This is what makes resolving a list source lazy: internal/open calls it
+// before doing anything that would fetch one, and asks only for the names it
+// returns. A setup with no for_each anywhere -- most of them -- gets an empty
+// slice, and its caller does no extra work at all; a setup naming a list
+// nobody produces still resolves nothing and falls through to the existing
+// "provides no lists" error at ResolveData time, unchanged.
+func (s Setup) ForEachNames() []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, tab := range s.Tabs {
+		name := strings.TrimSpace(tab.ForEach)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
 // Matches reports whether a setup should be offered for a subject.
 func (s Setup) Matches(sub Subject) bool {
 	if len(s.AppliesTo) > 0 && sub.Kind != "" && !contains(s.AppliesTo, string(sub.Kind)) {
