@@ -28,6 +28,16 @@ const (
 	// rather than a unit of work, so what happens next depends entirely on
 	// whether that checkout exists on this machine yet.
 	KindGitHubRepo Kind = "github_repo"
+	// KindGitHubStack refines KindGitHubPR rather than rivalling it: Parse
+	// never returns this value, and never will. Whether a pull request is
+	// stacked (its baseRefName chain has 2+ layers) is not something a URL
+	// says -- it takes a gh call to find out -- so it cannot be a parse-time
+	// decision the way the kinds above are. It exists purely as vocabulary
+	// for a setup's applies_to: [github_stack], matched by
+	// [setup.Setup.Matches] against [setup.Subject.Stacked], which is
+	// resolved lazily well after Parse has already said KindGitHubPR. See
+	// that field's doc comment for the full story.
+	KindGitHubStack Kind = "github_stack"
 	// KindLinear is a Linear issue URL.
 	KindLinear Kind = "linear"
 	// KindPlain is anything else: a name for a Space, not a reference.
