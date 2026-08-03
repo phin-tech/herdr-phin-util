@@ -310,6 +310,26 @@ func (s Setup) Validate() []string {
 		if tab.Worktree != nil && strings.TrimSpace(tab.Worktree.Ref) == "" {
 			add("%s: worktree has no ref to check out", where)
 		}
+		if forEach != "" && tab.Worktree != nil {
+			// A ref that does not vary per element builds N identical
+			// worktrees, which is never what was meant: the element was not
+			// used. Checked the only way Validate can check it -- against the
+			// unrendered template, asking whether it names this tab's own
+			// element prefix -- which is exactly the bar the focus rule below
+			// holds itself to. Not sound, deliberately: a ref could name
+			// {{.layer_index}} and still be wrong. It catches the literal
+			// mistake, which is the one that ships.
+			if strings.TrimSpace(tab.Worktree.Ref) != "" && !referencesElement(tab.Worktree.Ref, elementPrefix(tab)) {
+				add("%s: worktree ref %q does not vary per element -- every repetition would build the same worktree, so name {{.%s...}} in it", where, tab.Worktree.Ref, elementPrefix(tab))
+			}
+			// A branch cannot be checked out in two worktrees at once, so the
+			// second element onwards would fail outright in git. Detached is
+			// the default precisely so this is not the common shape; asking
+			// for it explicitly inside a repeated tab is always a mistake.
+			if tab.Worktree.Detach != nil && !*tab.Worktree.Detach {
+				add("%s: detach false inside a for_each tab -- a branch cannot be checked out in two worktrees at once, so every element after the first would fail", where)
+			}
+		}
 
 		for j, pane := range tab.EffectivePanes() {
 			at := fmt.Sprintf("%s pane %d", where, j+1)
@@ -364,6 +384,32 @@ func (s Setup) Validate() []string {
 	}
 
 	return problems
+}
+
+// elementPrefix is what each of a for_each tab's element fields renders
+// under: the as: name, or the list's own name when as: was left off. It is
+// the same rule tabIterations applies when it builds the per-element vars,
+// and the two have to agree or a validation message would name a prefix that
+// does not exist.
+func elementPrefix(tab Tab) string {
+	as := strings.TrimSpace(tab.As)
+	if as == "" {
+		as = strings.TrimSpace(tab.ForEach)
+	}
+	return as + "_"
+}
+
+// referencesElement reports whether a template mentions this tab's own
+// per-element fields, which is how Validate answers "does this vary per
+// element" without rendering anything.
+//
+// Deliberately loose: it looks for ".<prefix>" rather than parsing the
+// template, so it errs toward saying yes. A false yes accepts a setup that
+// might still be wrong; a false no would reject a setup that is right, and
+// blocking valid configuration is the worse failure for a rule whose whole
+// job is catching an obvious mistake.
+func referencesElement(text, prefix string) bool {
+	return strings.Contains(text, "."+prefix)
 }
 
 // knownKind reports whether a string names a target kind. The list lives in

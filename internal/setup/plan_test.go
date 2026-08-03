@@ -709,6 +709,97 @@ func TestValidateRejectsAWorktreeWithAnEmptyRef(t *testing.T) {
 	}
 }
 
+// hasProblemContaining is the shape the worktree validation tests share:
+// they care that some problem names the thing, not which position it is in.
+func hasProblemContaining(problems []string, parts ...string) bool {
+	for _, p := range problems {
+		all := true
+		for _, part := range parts {
+			if !strings.Contains(p, part) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// A ref that does not name the element builds the same worktree once per
+// element -- always a mistake, since a constant ref means the element was
+// never used. Rejected at load, like the focus rule, because it would
+// otherwise ship silently and cost real disk.
+func TestValidateRejectsAConstantRefInAForEachTab(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{
+		Name: "layer", ForEach: "layers", As: "layer",
+		Worktree: &WorktreeSpec{Ref: "main"},
+		Panes:    []Pane{{}},
+	}}}
+
+	if problems := s.Validate(); !hasProblemContaining(problems, "does not vary per element") {
+		t.Errorf("problems = %v, want one saying the ref does not vary", problems)
+	}
+}
+
+// The same tab with a ref that does name the element is fine -- the rule
+// must not reject the setup it exists to make possible.
+func TestValidateAcceptsAVaryingRefInAForEachTab(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{
+		Name: "layer", ForEach: "layers", As: "layer",
+		Worktree: &WorktreeSpec{Ref: "{{.layer_head_sha}}"},
+		Panes:    []Pane{{}},
+	}}}
+
+	if problems := s.Validate(); len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+}
+
+// as: defaults to the list name, so the prefix the rule looks for has to
+// default with it -- otherwise a setup that omits as: is wrongly rejected.
+func TestValidateVaryingRefWorksWhenAsDefaultsToTheListName(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{
+		Name: "layer", ForEach: "layers",
+		Worktree: &WorktreeSpec{Ref: "{{.layers_head_sha}}"},
+		Panes:    []Pane{{}},
+	}}}
+
+	if problems := s.Validate(); len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+}
+
+// A branch cannot be checked out in two worktrees at once, so every element
+// after the first would fail in git. Detached is the default precisely so
+// this is not the common shape; asking for it explicitly here is a mistake.
+func TestValidateRejectsDetachFalseInAForEachTab(t *testing.T) {
+	no := false
+	s := Setup{Name: "x", Tabs: []Tab{{
+		Name: "layer", ForEach: "layers", As: "layer",
+		Worktree: &WorktreeSpec{Ref: "{{.layer_head_branch}}", Detach: &no},
+		Panes:    []Pane{{}},
+	}}}
+
+	if problems := s.Validate(); !hasProblemContaining(problems, "detach false") {
+		t.Errorf("problems = %v, want one rejecting detach false", problems)
+	}
+}
+
+// detach: false outside a for_each is legitimate -- one tab committing on a
+// branch is exactly what it is for -- so the rule must be scoped to repeats.
+func TestValidateAcceptsDetachFalseOutsideAForEachTab(t *testing.T) {
+	no := false
+	s := Setup{Name: "x", Tabs: []Tab{{
+		Name: "work", Worktree: &WorktreeSpec{Ref: "fix/thing", Detach: &no}, Panes: []Pane{{}},
+	}}}
+
+	if problems := s.Validate(); len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+}
+
 // An ordinary worktree: tab passes validation cleanly -- the point of the
 // other two tests is that only the actual conflicts are rejected.
 func TestValidateAcceptsAnOrdinaryWorktreeTab(t *testing.T) {

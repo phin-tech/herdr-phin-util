@@ -228,15 +228,32 @@ tooling, another editor) is reconstructed from `baseRefName` by the walk
 above. Both resolve to the identical per-layer fields, so which one answered
 is only visible if it misbehaves.
 
-**There is deliberately no *per-layer* `worktree` yet.** `worktree:` on a tab
-(below) landed and works on an ordinary tab -- one ref, one worktree -- but a
-`for_each` tab whose `ref` varies per element (one worktree per stacked PR
-layer) still needs two validation rules this version does not enforce (a
-constant `ref` and `detach: false` are both always mistakes inside a
-`for_each` tab) and is not built here. Until then, `for_each: layers` is
-usable for anything that reads a diff or prompts an agent with a layer's own
-metadata, but it does not by itself replace a script that builds one worktree
-per layer.
+**A `for_each` tab can give every layer its own checkout.** Put `worktree:`
+on the repeated tab and let its `ref` vary per element:
+
+```yaml
+tabs:
+  - for_each: layers
+    as: layer
+    name: "L{{.layer_index}} #{{.layer_pr}}"
+    worktree: {ref: "{{.layer_head_sha}}"}
+    panes:
+      - agent: claude
+        submit: true
+        prompt: "Review #{{.layer_pr}} — {{.layer_title}}"
+```
+
+That is what replaces a bootstrap script that built one worktree per layer.
+Two rules are enforced at load, because both are always mistakes and both
+would otherwise cost real disk before anyone noticed:
+
+- **A `ref` that does not name the element.** A constant ref builds the same
+  worktree once per element, which means the element was never used. Checked
+  against the unrendered template by asking whether it mentions `{{.<as>_…}}`
+  — deliberately loose, so it errs toward accepting.
+- **`detach: false` inside a `for_each` tab.** A branch cannot be checked out
+  in two worktrees at once, so every element after the first fails in git.
+  Outside a `for_each` it stays perfectly legitimate.
 
 Each element's own fields render **flat**, prefixed with `as`: `{{.layer_pr}}`,
 never `{{.layer.pr}}`. That is deliberate, not an oversight — the same plain
