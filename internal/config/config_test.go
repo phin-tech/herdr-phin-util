@@ -255,6 +255,64 @@ func TestResolveWorktreePathRepoRootPlaceholder(t *testing.T) {
 	}
 }
 
+// With no [worktrees].path configured, a tab's own worktree still needs
+// somewhere concrete to live -- unlike ResolveWorktreePath, there is no Herdr
+// call that would pick it instead -- so this falls back to a default keyed on
+// repo root and ref alone.
+func TestResolveTabWorktreePathDefaultsWhenUnconfigured(t *testing.T) {
+	s := &Settings{}
+	tgt := target.Target{}
+
+	got := s.ResolveTabWorktreePath(tgt, "/repo/root", "main")
+	want := "/repo/root/.herdr-worktrees/main"
+	if got != want {
+		t.Errorf("ResolveTabWorktreePath = %q, want %q", got, want)
+	}
+}
+
+// Keyed on repo root and ref alone -- no setup name, no run id, no
+// timestamp -- is what makes a re-run reuse the same worktree rather than
+// accumulate a fresh one every time (#12's explicit preference).
+func TestResolveTabWorktreePathIsDeterministicAcrossCalls(t *testing.T) {
+	s := &Settings{}
+	tgt := target.Target{}
+
+	first := s.ResolveTabWorktreePath(tgt, "/repo/root", "main")
+	second := s.ResolveTabWorktreePath(tgt, "/repo/root", "main")
+	if first != second {
+		t.Errorf("two resolutions disagreed: %q vs %q", first, second)
+	}
+}
+
+// A configured [worktrees].path is reused for a tab's own worktree too,
+// through the new {ref} placeholder -- one configured notion of where this
+// plugin's worktrees live, not two.
+func TestResolveTabWorktreePathUsesConfiguredTemplate(t *testing.T) {
+	s := &Settings{WorktreePath: "{repo_root}/.worktrees/{ref}"}
+	tgt := target.Target{}
+
+	got := s.ResolveTabWorktreePath(tgt, "/repo/root", "release/v2")
+	want := "/repo/root/.worktrees/release/v2"
+	if got != want {
+		t.Errorf("ResolveTabWorktreePath = %q, want %q", got, want)
+	}
+}
+
+// A ref with slashes (a SHA never has one, but a branch name used with
+// detach: false can) is sanitized the same way {branch} already is, so it
+// becomes safe nested directories rather than colliding with the template's
+// own separators unpredictably.
+func TestResolveTabWorktreePathSanitizesARefWithSlashes(t *testing.T) {
+	s := &Settings{}
+	tgt := target.Target{}
+
+	got := s.ResolveTabWorktreePath(tgt, "/repo/root", "Feature/Thing")
+	want := "/repo/root/.herdr-worktrees/feature/thing"
+	if got != want {
+		t.Errorf("ResolveTabWorktreePath = %q, want %q", got, want)
+	}
+}
+
 // Linear issues resolve from the URL alone today, with no API call. The key
 // is still accepted and carried through so a later enrichment step has
 // somewhere to read it from without a config format change.

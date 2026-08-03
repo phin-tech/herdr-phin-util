@@ -6,6 +6,94 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.9.0 — 2026-08-03
+
+A tab can pin itself to a git ref of its own ([#12]).
+
+0.8.0 gave `for_each` a source but explicitly no per-layer checkout, because
+that needed a tab that could pin itself to a ref, which was a separate,
+larger piece of work. This is that piece, for the plain case: `worktree:` on
+an ordinary tab, no `for_each` in sight. It is more general than the stack
+that motivated it — comparing two versions side by side, pinning a test
+runner to a known-good commit while another tab keeps moving, reviewing a
+tag while `HEAD` moves under it are all the same feature, and none of them
+need a loop.
+
+- Every hard decision here is architectural rather than YAML surface, which
+  is why it shipped on its own before the `for_each` interaction: **Herdr's
+  own worktree API cannot do this, at all.** `herdr worktree create` takes no
+  `--detach` and always checks out a *named branch* it makes itself
+  (`WorktreeRequest.Branch` is documented as "the name of the branch that
+  gets made"), and every one of its calls is Space-scoped — `CreateWorktree`
+  returns a new Workspace, `worktree.remove` takes a workspace id, never a
+  bare path. A tab's worktree is a directory a tab points its `cwd` at, not a
+  Space, so there was never a Herdr call to route this through. It goes
+  through git directly instead.
+- Which means `internal/gitcmd` writes to disk for the first time.
+  `WorktreeAdd`/`WorktreeAddBranch` run `git worktree add`; the package's own
+  doc comment used to say nothing here touches the working tree, and that
+  line is gone now rather than left to quietly go stale. `FetchRef` is
+  `FetchBranch`'s counterpart for an arbitrary ref (GitHub allows fetching a
+  bare SHA, and `git fetch origin <branch>` is not that call), and tolerates
+  a commit already present locally without erroring — the common case, and
+  git itself refuses that fetch rather than treating it as a no-op.
+  `WorktreeRemove` is wired for tests and a future cleanup story, but nothing
+  calls it automatically; see the collision rule below for why.
+- Detached by default: a branch can't be checked out in two worktrees at
+  once and moves under you the moment someone pushes to it mid-review,
+  neither of which is a problem for a detached `HEAD`. `detach: false` opts
+  into a branch checkout instead, safe here because without `for_each` there
+  is only one tab to collide with itself.
+- The naming scheme extends `[worktrees].path` rather than inventing a
+  second notion of a plugin-managed directory: a `{ref}` placeholder,
+  sanitized the same way `{branch}` already is. Left unconfigured, a tab's
+  own worktree defaults to `{repo_root}/.herdr-worktrees/{ref}` — keyed on
+  repo root and ref **alone**, no setup name, no run id, no timestamp, which
+  is what makes a re-run reuse rather than accumulate. That preference was
+  explicit in the issue: "I would rather it accumulate predictably than get
+  cleverly cleaned up and occasionally delete something someone was using."
+- The collision rule that sentence produced, confirmed during review rather
+  than guessed at: path missing → create it; path present and already
+  checked out at the ref's commit → reuse it, no-op; present and checked out
+  at a *different* commit → report that tab as failed and skip it. **Nothing
+  here ever runs `git worktree remove --force`.** The error names the exact
+  command to run by hand instead. Auto-forcing was precisely the thing the
+  issue ruled out, and the code says so at the point a future edit would be
+  tempted to add it back.
+- `ref` is a template, rendered in the same per-iteration pass `cwd` already
+  is — not because this version needs it to vary per element, but so a later
+  `for_each` tab's differing `ref` costs nothing extra to wire up when it
+  lands. A `Step` carries the rendered ref and detach flag in a new field
+  rather than folding them into `Cwd`: `Cwd` stays the plain, deterministic,
+  computable-before-creation path every other reader (`buildPanes`,
+  `fillPanes`, `--dry-run`) already assumes it is, which the naming scheme
+  above makes true without any special-casing.
+- A worktree has to exist before Herdr's `tab.create` is called for it —
+  there is no "cd into this afterward" call — so `applySetup` gained a third
+  pass, between resolving the plan and building any pane, that creates every
+  tab's own worktree first. A worktree that fails to build marks only its
+  own tab abandoned, the same contract a failed pane already had: reported,
+  skipped, the rest of the layout still built. The one tab this needed
+  careful wording for is the Space's own first tab — there is no "reuse the
+  Space's own tab" fallback to lose there, since that tab and its root pane
+  exist regardless; it just lands in the Space's own directory rather than
+  the pinned one, and says so.
+- `--dry-run` never runs this pass. It prints the same deterministic path a
+  real run would use, plus the ref, and says plainly that nothing has been
+  created yet — consistent with how a whole-Space worktree preview already
+  reads when its path isn't knowable at all; this one differs only in that
+  the path *is* knowable, and still isn't there.
+- `cwd:` and `worktree:` on the same tab is rejected: two answers to "where
+  does this tab live," not a precedence rule to resolve quietly. So is
+  `worktree:` with a blank `ref`.
+- Deliberately **not** included: the two validation rules that only mean
+  anything once `ref` can vary per element — a constant `ref` on a
+  `for_each` tab (every element would build an identical worktree, always a
+  mistake) and `detach: false` on one (every element would fight over the
+  same branch checkout). Neither is implemented, on purpose; the schema and
+  the resolution pass are written so that piece can land without reshaping
+  this one.
+
 ## 0.8.0 — 2026-08-03
 
 `for_each` gets a source ([#13]).

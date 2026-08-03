@@ -140,6 +140,36 @@ type Pane struct {
 	WaitFor *WaitFor `yaml:"wait_for"`
 }
 
+// WorktreeSpec pins a tab to a git ref of its own, checked out in a worktree
+// the tab's own cwd points at, rather than sharing the Space's one worktree
+// (see #12). It is deliberately not folded into Cwd: a tab with both is two
+// answers to the same question ("where does this tab live"), not a
+// precedence rule, and Validate rejects the combination outright.
+//
+// This is stage one of #12 -- an ordinary tab, no for_each in sight. The
+// shape is written to accept for_each without rework: Ref already renders as
+// a per-iteration template (see ResolveData's tabCwd handling, which this
+// follows exactly), so a for_each tab whose Ref varies per element already
+// works once stage two adds the two validation rules that belong to it: a
+// constant Ref on a for_each tab (every element would build an identical
+// worktree, which is always a mistake), and detach: false on a for_each tab
+// (every element would fight over the same branch checkout). Neither rule is
+// implemented here on purpose.
+type WorktreeSpec struct {
+	// Ref is a Go text/template, rendered against the same per-iteration data
+	// a tab's Cwd is -- a branch, a tag, or a bare commit SHA.
+	Ref string `yaml:"ref"`
+	// Detach is a pointer so "not set" and "set to false" are distinguishable:
+	// nil means true. Detached is the default because a branch cannot be
+	// checked out in two worktrees at once and moves under you if someone
+	// pushes to it mid-review -- neither is a problem for a detached HEAD.
+	// detach: false opts into a branch checkout instead, for the single-tab
+	// case where the point is to commit on it; safe in stage one only because
+	// there is no for_each to make several elements fight over the same
+	// branch.
+	Detach *bool `yaml:"detach"`
+}
+
 // Tab is one tab of a setup.
 type Tab struct {
 	Name string            `yaml:"name"`
@@ -149,6 +179,10 @@ type Tab struct {
 	// nothing else. It cannot be combined with Panes.
 	Command string `yaml:"command"`
 	Panes   []Pane `yaml:"panes"`
+	// Worktree pins this tab to its own ref -- see WorktreeSpec -- instead of
+	// the Space's own worktree. nil is the ordinary case: a tab with no
+	// worktree: uses the Space's own cwd exactly as it always has.
+	Worktree *WorktreeSpec `yaml:"worktree"`
 
 	// ForEach names a list carried in a [Data] passed to ResolveData, one that
 	// this tab is rendered once per element of -- and deliberately a name,
@@ -264,6 +298,17 @@ func (s Setup) Validate() []string {
 		}
 		if forEach == "" && strings.TrimSpace(tab.As) != "" {
 			add("%s: as %q is set without a for_each to repeat over", where, tab.As)
+		}
+
+		// cwd: and worktree: are two answers to "where does this tab live",
+		// not a precedence rule -- a setup that sets both said something
+		// contradictory, not something ambiguous, and should be told so
+		// rather than have one silently win.
+		if tab.Worktree != nil && strings.TrimSpace(tab.Cwd) != "" {
+			add("%s has both cwd and worktree -- they are two answers to where the tab lives, use one", where)
+		}
+		if tab.Worktree != nil && strings.TrimSpace(tab.Worktree.Ref) == "" {
+			add("%s: worktree has no ref to check out", where)
 		}
 
 		for j, pane := range tab.EffectivePanes() {

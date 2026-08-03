@@ -3,6 +3,7 @@ package open
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -117,7 +118,7 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 	l := &fakeLayout{}
 	cfg := &config.Settings{}
 
-	plan, panes, problems, err := applySetup(Deps{Session: s, Layout: l}, cfg, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"})
+	plan, panes, problems, err := applySetup(Deps{Session: s, Layout: l}, cfg, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", "/repo", map[string]string{"Number": "42"})
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 // has started in it resizes a running program.
 func TestApplySetupCreatesEveryPaneBeforeFillingAny(t *testing.T) {
 	l := &fakeLayout{}
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -186,7 +187,7 @@ func TestApplySetupTypesUnsubmittedPromptsAndSendsSubmittedOnes(t *testing.T) {
 	s := &fakeSession{}
 	l := &fakeLayout{}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", map[string]string{"Number": "42"}); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", "/repo", map[string]string{"Number": "42"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -210,7 +211,7 @@ func TestApplySetupWaitsBeforeContinuing(t *testing.T) {
 	s := &fakeSession{}
 	l := &fakeLayout{}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, reviewSetup(), rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -236,7 +237,7 @@ func TestApplySetupWaitTimeoutIsNotFatal(t *testing.T) {
 		{Split: "down", Command: "echo done"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatalf("a wait timeout aborted the layout: %v", err)
 	}
 	if !strings.Contains(l.transcript(), "echo done") {
@@ -254,7 +255,7 @@ func TestApplySetupWaitsForTheCodexInputBeforePrompting(t *testing.T) {
 		{Agent: "codex", Prompt: "review this", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -284,7 +285,7 @@ func TestApplySetupDoesNotPromptACodexStuckOnItsStartupScreen(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex", Prompt: "review this", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -306,7 +307,7 @@ func TestApplySetupFocusesTheMarkedPane(t *testing.T) {
 		{Split: "down", Focus: true},
 	}}}}
 
-	_, panes, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, panes, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +322,7 @@ func TestApplySetupFocusesTheFirstPaneWhenNoneIsMarked(t *testing.T) {
 	l := &fakeLayout{}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{{}, {Split: "down"}}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if last := l.calls[len(l.calls)-1]; last != "focus root" {
@@ -332,7 +333,7 @@ func TestApplySetupFocusesTheFirstPaneWhenNoneIsMarked(t *testing.T) {
 func TestApplySetupRejectsAnUnknownAgentKind(t *testing.T) {
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{{Agent: "clod"}}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestApplySetupFailureNamesTheTab(t *testing.T) {
 	l := &fakeLayout{splitErr: errors.New("no room")}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{{}, {Split: "down"}}}}}
 
-	_, panes, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, panes, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestApplySetupCarriesOnPastAFailedPane(t *testing.T) {
 		{Split: "down", Label: "checks", Command: "roborev review-branch"},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -400,7 +401,7 @@ func TestApplySetupSkipsTheRestOfATabItCouldNotCreate(t *testing.T) {
 		{Name: "second", Panes: []setup.Pane{{Command: "two"}, {Split: "down", Command: "three"}}},
 	}}
 
-	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -426,7 +427,7 @@ func TestApplySetupSkipsTheWaitOfAFailedPane(t *testing.T) {
 		{Command: "roborev", WaitFor: &setup.WaitFor{Match: "queued", TimeoutMs: 30000}},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range s.waitOutputCalls {
@@ -444,7 +445,7 @@ func TestApplySetupRetriesAPromptOnce(t *testing.T) {
 		{Agent: "claude", Prompt: "review it", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -467,7 +468,7 @@ func TestApplySetupWaitsForLaunchBeforeSubmittingAPrompt(t *testing.T) {
 		{Agent: "claude", Prompt: "review it", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -492,7 +493,7 @@ func TestApplySetupReportsAnAgentThatNeverLaunches(t *testing.T) {
 		{Agent: "codex", Prompt: "review it", Submit: true},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -516,7 +517,7 @@ func TestApplySetupStillTypesIntoAnAgentThatNeverLaunches(t *testing.T) {
 		{Agent: "claude", Prompt: "read this first"},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -536,7 +537,7 @@ func TestApplySetupAgentNamesAreUniqueAndValid(t *testing.T) {
 		{Split: "down", Label: "Worker #2!", Agent: "claude"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -566,7 +567,7 @@ func TestApplySetupRetriesATakenAgentNameQualifiedByTheSpace(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex"},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w14", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w14", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -594,7 +595,7 @@ func TestApplySetupReportsAnAgentNameTakenTwice(t *testing.T) {
 		{Label: "codex-reviewer", Agent: "codex"},
 	}}}}
 
-	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w14", "/repo", nil)
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w14", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -632,7 +633,7 @@ func TestApplySetupInheritsTheSpaceDirectory(t *testing.T) {
 		{Name: "b", Cwd: "docs"},
 	}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -757,7 +758,7 @@ func TestFillPanePrefixesACommandWithItsOwnIds(t *testing.T) {
 		{Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -778,7 +779,7 @@ func TestFillPaneAddsALabelledSiblingAsAnHerdrPaneVariable(t *testing.T) {
 		{Split: "down", Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -803,7 +804,7 @@ func TestFillPaneFoldsLabelsIntoEnvNamesAndSkipsIllegalOnes(t *testing.T) {
 		{Split: "down", Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -833,7 +834,7 @@ func TestFillPaneResolvesAFoldedLabelCollisionByPlanOrder(t *testing.T) {
 		{Split: "down", Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -859,7 +860,7 @@ func TestFillPaneReservesHerdrPaneIDAgainstACollidingLabel(t *testing.T) {
 		{Split: "down", Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -884,7 +885,7 @@ func TestFillPaneDoesNotPrefixAnAgentPrompt(t *testing.T) {
 		{Agent: "claude", Prompt: "review this"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.sendTextCalls) != 1 || s.sendTextCalls[0].text != "review this" {
@@ -904,7 +905,7 @@ func TestFillPaneOmitsAFailedPaneFromSiblingEnv(t *testing.T) {
 		{Split: "down", Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(l.transcript(), "HERDR_PANE_WORKER") {
@@ -929,7 +930,7 @@ func TestFillPaneEmitsHerdrKeysInSortedOrder(t *testing.T) {
 		{Split: "down", Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -953,7 +954,7 @@ func TestFillPaneQuotesHerdrValues(t *testing.T) {
 		{Command: "./discover.py"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w2H", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(l.transcript(), "HERDR_WORKSPACE_ID='w2H'") {
@@ -971,7 +972,7 @@ func TestApplySetupPassesTheAgentCommandLine(t *testing.T) {
 		{Split: "down", Agent: "codex"},
 	}}}}
 
-	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", nil); err != nil {
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.startAgentCalls) != 2 {
@@ -984,5 +985,271 @@ func TestApplySetupPassesTheAgentCommandLine(t *testing.T) {
 	// args is not the same as an absent one for some agent kinds.
 	if s.startAgentCalls[1].args != nil {
 		t.Errorf("args = %v, want nil for a pane that named none", s.startAgentCalls[1].args)
+	}
+}
+
+// worktreePathFor mirrors the default naming scheme (internal/config's
+// ResolveTabWorktreePath with no [worktrees].path configured) so a test can
+// say ahead of time what path applySetup's pre-pass is going to compute,
+// without reaching into internal/config itself.
+func worktreePathFor(repoRoot, ref string) string {
+	return repoRoot + "/.herdr-worktrees/" + ref
+}
+
+// The missing case: nothing is at the deterministic path yet, so the
+// pre-pass creates it, detached, before the tab that needs it is built.
+func TestApplySetupCreatesAMissingWorktreeBeforeOpeningItsTab(t *testing.T) {
+	repoRoot := t.TempDir()
+	fetch := &fakeFetcher{}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "shell"},
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "main"}, Panes: []setup.Pane{{}}},
+	}}
+
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l, Git: fetch}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", repoRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+
+	want := worktreePathFor(repoRoot, "main")
+	if len(fetch.worktreeAddCalls) != 1 || fetch.worktreeAddCalls[0] != want+" main" {
+		t.Errorf("WorktreeAdd calls = %v, want one detached add at %q", fetch.worktreeAddCalls, want)
+	}
+	if len(fetch.worktreeAddBranchCalls) != 0 {
+		t.Errorf("WorktreeAddBranch calls = %v, want none -- detach is the default", fetch.worktreeAddBranchCalls)
+	}
+	if !strings.Contains(l.transcript(), "tab baseline cwd="+want) {
+		t.Errorf("the tab was not created at the worktree path:\n%s", l.transcript())
+	}
+}
+
+// The reuse case: a worktree already sits at the deterministic path, and its
+// HEAD already matches the ref -- a no-op, not a fresh checkout.
+func TestApplySetupReusesAnExistingWorktreeWhoseHeadMatches(t *testing.T) {
+	repoRoot := t.TempDir()
+	path := worktreePathFor(repoRoot, "main")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The default fakeFetcher.ResolveRef answers "sha-<ref>" for any ref;
+	// matching that here is what makes this the reuse case rather than the
+	// collision case below.
+	fetch := &fakeFetcher{headCommitSHA: "sha-main"}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "main"}, Panes: []setup.Pane{{}}},
+	}}
+
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l, Git: fetch}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", repoRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none -- a matching HEAD is a silent reuse", problems)
+	}
+	if len(fetch.worktreeAddCalls) != 0 || len(fetch.worktreeAddBranchCalls) != 0 {
+		t.Errorf("a worktree was (re)created instead of reused: add=%v addBranch=%v", fetch.worktreeAddCalls, fetch.worktreeAddBranchCalls)
+	}
+}
+
+// The collision case, confirmed by the repo owner during #12's design: a
+// worktree already at the path, checked out at a *different* commit than the
+// ref asks for, is reported and that tab is skipped -- never force-removed
+// and recreated.
+func TestApplySetupReportsAndSkipsAWorktreeCheckedOutAtADifferentCommit(t *testing.T) {
+	repoRoot := t.TempDir()
+	path := worktreePathFor(repoRoot, "main")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fetch := &fakeFetcher{headCommitSHA: "some-other-commit"}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "shell"},
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "main"}, Panes: []setup.Pane{{}}},
+	}}
+
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l, Git: fetch}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", repoRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 {
+		t.Fatalf("problems = %v, want one naming the collision", problems)
+	}
+	for _, want := range []string{"baseline", path, "git worktree remove --force " + path} {
+		if !strings.Contains(problems[0], want) {
+			t.Errorf("problem %q missing %q", problems[0], want)
+		}
+	}
+	// Never a force-remove-and-recreate, ever: the interface applySetup's
+	// pre-pass talks to (WorktreeGit) does not even have a Remove method, so
+	// there is no call here to assert the absence of -- that guarantee is
+	// structural, not behavioural.
+	if len(fetch.worktreeAddCalls) != 0 || len(fetch.worktreeAddBranchCalls) != 0 {
+		t.Errorf("the mismatched worktree was rebuilt instead of left alone: add=%v addBranch=%v", fetch.worktreeAddCalls, fetch.worktreeAddBranchCalls)
+	}
+	if strings.Contains(l.transcript(), "baseline") {
+		t.Errorf("the tab whose worktree collided was still built:\n%s", l.transcript())
+	}
+}
+
+// A failed worktree abandons only its own tab -- the rest of the layout,
+// including a tab that comes after it in the file, still gets built. This is
+// the ordinary (not-first) tab case: baseline is second, so it goes through
+// buildPanes' NewTab/CreateTab path rather than reusing the Space's own root
+// pane -- see the FirstTab-specific test below for that one.
+func TestApplySetupFailedWorktreeAbandonsOnlyItsOwnTab(t *testing.T) {
+	repoRoot := t.TempDir()
+	fetch := &fakeFetcher{fetchRefErr: errors.New("network is down")}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "shell", Command: "echo hi"},
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "main"}, Panes: []setup.Pane{{}}},
+	}}
+
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l, Git: fetch}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", repoRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "baseline") {
+		t.Errorf("problems = %v, want one naming the failed tab", problems)
+	}
+	if !strings.Contains(l.transcript(), "echo hi") {
+		t.Errorf("the tab after the failed worktree never built:\n%s", l.transcript())
+	}
+	if strings.Contains(l.transcript(), "tab baseline") {
+		t.Errorf("a tab was created for the failed worktree:\n%s", l.transcript())
+	}
+}
+
+// A worktree: tab that is also the Space's own first tab has no "reuse the
+// Space's own tab" fallback to lose when its worktree fails -- the root pane
+// and tab already exist regardless. It still gets reported, and the rest of
+// that one tab (its splits) is what gets abandoned, not the tab itself.
+func TestApplySetupReportsAFailedWorktreeOnTheFirstTabWithoutLosingTheRootPane(t *testing.T) {
+	repoRoot := t.TempDir()
+	fetch := &fakeFetcher{fetchRefErr: errors.New("network is down")}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "main"}, Panes: []setup.Pane{
+			{},
+			{Split: "down", Command: "echo skip-me"},
+		}},
+	}}
+
+	_, panes, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: l, Git: fetch}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", repoRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "baseline") {
+		t.Errorf("problems = %v, want one naming the failed tab", problems)
+	}
+	// The Space's own root pane is still what the first step used -- there
+	// was never a "reuse the Space's own tab" fallback to lose.
+	if panes[0] != "root" {
+		t.Errorf("panes[0] = %q, want the Space's own root pane reused despite the failed worktree", panes[0])
+	}
+	if strings.Contains(l.transcript(), "skip-me") {
+		t.Errorf("the split after the failed worktree still ran:\n%s", l.transcript())
+	}
+}
+
+// detach: false checks ref out as a branch rather than leaving HEAD
+// detached, through WorktreeAddBranch rather than WorktreeAdd.
+func TestApplySetupDetachFalseChecksOutABranch(t *testing.T) {
+	repoRoot := t.TempDir()
+	fetch := &fakeFetcher{}
+	no := false
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "fix-thing", Detach: &no}, Panes: []setup.Pane{{}}},
+	}}
+
+	_, _, problems, err := applySetup(Deps{Session: &fakeSession{}, Layout: &fakeLayout{}, Git: fetch}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", repoRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+	if len(fetch.worktreeAddBranchCalls) != 1 {
+		t.Fatalf("WorktreeAddBranch calls = %v, want one", fetch.worktreeAddBranchCalls)
+	}
+	if len(fetch.worktreeAddCalls) != 0 {
+		t.Errorf("WorktreeAdd (detached) was called for a detach:false tab: %v", fetch.worktreeAddCalls)
+	}
+}
+
+// PreviewSetup -- what --dry-run runs -- must never create a tab's worktree,
+// the same promise it already makes for the whole-Space case. cfg here has
+// no [worktrees].path configured, so the printed path is the default
+// {repo_root}/.herdr-worktrees/{ref} scheme.
+// [worktrees].path expands {host}, {owner} and {repo} from the target, and
+// those are exactly the placeholders [repos].templates already uses -- so
+// "~/wt/{host}/{owner}/{repo}/{ref}" is the obvious thing to configure here.
+// A synthesised stand-in target instead of the real one would expand {host}
+// and {owner} to nothing and quietly produce a path with empty segments,
+// which is the bug this pins.
+func TestWorktreePathUsesTheRealTargetsHostAndOwner(t *testing.T) {
+	cfg := &config.Settings{WorktreePath: "/wt/{host}/{owner}/{repo}/{ref}"}
+	tgt := target.Target{
+		Kind: target.KindGitHubPR, Host: "github.com",
+		Owner: "phin-tech", Repo: "herdr-phin-util", Number: 42,
+	}
+
+	fn := worktreePathFn(cfg, tgt, "/src/herdr-phin-util")
+	if fn == nil {
+		t.Fatal("want a path function for a target with a repo root")
+	}
+	got := fn("main")
+	want := "/wt/github.com/phin-tech/herdr-phin-util/main"
+	if got != want {
+		t.Errorf("worktree path = %q, want %q", got, want)
+	}
+}
+
+// A target that names no repository of its own -- a plain Space opened inside
+// a checkout -- still has to fill {repo} with something, and the checkout's
+// own directory name is the fallback every other path in the plugin uses.
+func TestWorktreePathFallsBackToTheCheckoutNameForRepo(t *testing.T) {
+	cfg := &config.Settings{WorktreePath: "/wt/{repo}/{ref}"}
+
+	fn := worktreePathFn(cfg, target.Target{Kind: target.KindPlain}, "/src/roux-next-gen")
+	if fn == nil {
+		t.Fatal("want a path function for a target with a repo root")
+	}
+	if got, want := fn("v1.2.0"), "/wt/roux-next-gen/v1.2.0"; got != want {
+		t.Errorf("worktree path = %q, want %q", got, want)
+	}
+}
+
+func TestPreviewSetupDescribesATabWorktreeWithoutTouchingDiskOrGit(t *testing.T) {
+	repoRoot := t.TempDir()
+	fetch := &fakeFetcher{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{
+		{Name: "baseline", Worktree: &setup.WorktreeSpec{Ref: "{{.Branch}}"}, Panes: []setup.Pane{{}}},
+	}}
+	cfg := &config.Settings{}
+
+	plan, _, err := PreviewSetup(Deps{Cwd: repoRoot, Git: fetch}, cfg, "https://linear.app/phin/issue/ENG-9/do-a-thing", def)
+	if err != nil {
+		t.Fatalf("PreviewSetup: %v", err)
+	}
+
+	out := strings.Join(plan.Describe(), "\n")
+	want := worktreePathFor(repoRoot, "eng-9-do-a-thing")
+	for _, s := range []string{want, "eng-9-do-a-thing", "not created yet"} {
+		if !strings.Contains(out, s) {
+			t.Errorf("Describe() missing %q:\n%s", s, out)
+		}
+	}
+	if fetch.calls != 0 || len(fetch.fetchRefCalls) != 0 || len(fetch.worktreeAddCalls) != 0 {
+		t.Errorf("a preview touched git: %+v", fetch)
+	}
+	if _, err := os.Stat(want); err == nil {
+		t.Errorf("a preview created %s on disk", want)
 	}
 }

@@ -222,11 +222,12 @@ Each layer's fields, all strings: `layer` (1-based), `pr`, `title`, `url`,
 below this layer, empty for the bottom layer — it bases on the trunk, not on
 another open PR).
 
-**There is deliberately no per-layer `worktree` field yet.** Every layer
-shares the Space's one `cwd`, exactly like any non-repeated tab reviewing a
-single PR. Giving each layer its own checkout needs a tab that can pin itself
-to a ref, which is a separate, larger feature (`worktree:` on a tab) tracked
-on its own issue (#12) and not built here. Until it lands, `for_each: layers` is
+**There is deliberately no *per-layer* `worktree` yet.** `worktree:` on a tab
+(below) landed and works on an ordinary tab -- one ref, one worktree -- but a
+`for_each` tab whose `ref` varies per element (one worktree per stacked PR
+layer) still needs two validation rules this version does not enforce (a
+constant `ref` and `detach: false` are both always mistakes inside a
+`for_each` tab) and is not built here. Until then, `for_each: layers` is
 usable for anything that reads a diff or prompts an agent with a layer's own
 metadata, but it does not by itself replace a script that builds one worktree
 per layer.
@@ -253,6 +254,80 @@ repetition would set it, and only the last one built would silently win.
 This is the one loop this file format has, and deliberately the only one — no
 `when:`, no conditionals, no nesting one `for_each` inside another. Anything
 that needs real logic belongs in a `command:` pane instead of in YAML.
+
+### worktree: pinning a tab to its own ref
+
+A tab can be checked out at a ref of its own, rather than sharing the Space's
+one worktree:
+
+```yaml
+tabs:
+  - name: baseline
+    worktree: { ref: "main" }        # detached by default
+    panes: [{ command: "npm test" }]
+
+  - name: work                       # no worktree: -- uses the Space's own
+    panes: [{ agent: claude }]       # cwd, exactly as before
+```
+
+This is for comparing two versions side by side, pinning a test runner to a
+known-good commit while another tab keeps moving, or reviewing a tag while
+`HEAD` moves under it — none of which need `for_each` at all. (A `for_each`
+tab whose `ref` varies per element — one worktree per stacked PR layer — is a
+separate, not-yet-built interaction; see the note at the end of this
+section.)
+
+`ref` is a template, rendered against the same data as `cwd`: `{{.Branch}}`,
+`{{.Number}}`, and inside a `for_each` tab, `{{.layer_head_sha}}` and the rest
+of that element's fields.
+
+**Detached by default.** A branch cannot be checked out in two worktrees at
+once, and it moves under you the moment someone pushes to it mid-review --
+neither is a problem for a detached `HEAD`, which just is whatever commit
+`ref` named. `detach: false` opts into a branch checkout instead, for the
+single-tab case where the point is to commit on it.
+
+**`cwd:` and `worktree:` together is rejected.** They are two answers to
+"where does this tab live," not a precedence rule to resolve quietly.
+`worktree:` with a blank `ref` is rejected too -- there is nothing to check
+out.
+
+**Where it lives on disk.** The same `[worktrees].path` template that already
+places a whole Space's worktree now also takes a `{ref}` placeholder,
+sanitized the same way `{branch}` is. Left unconfigured, a tab's own worktree
+defaults to `{repo_root}/.herdr-worktrees/{ref}` -- keyed on the repo root and
+the ref **alone**, deliberately: no setup name, no run id, no timestamp, so
+re-running the same setup against the same ref reuses the worktree that is
+already there rather than growing a new one next to it.
+
+**The collision rule**, if something is already at that path:
+
+- missing → it is created.
+- present, and already checked out at the commit `ref` names → reused, silently.
+- present, but checked out somewhere **else** → that tab is reported as failed
+  and skipped. **Nothing here ever force-removes it.** The error names the
+  exact command to run by hand if you mean to replace it:
+
+  ```
+  git worktree remove --force <path>
+  ```
+
+  This is deliberate, not a missing feature: automatically forcing it would
+  be "occasionally delete something someone was using," which is worse than a
+  setup that accumulates predictably and asks before clearing anything.
+
+**`--dry-run` never creates anything.** It prints the deterministic path (the
+same one a real run would use, since it needs no worktree to exist to be
+computed) and the rendered `ref`, and says plainly that nothing has been
+built yet.
+
+**Not built yet: per-layer worktrees for a `for_each` tab.** A constant `ref`
+on a `for_each` tab (every element building an identical worktree) and
+`detach: false` on one (every element fighting over the same branch checkout)
+are both validation rules this version does not enforce, since neither one
+means anything without `for_each` actually varying per element -- everything
+else here (the schema, the naming, the collision rule) is written so that
+piece can land without reshaping this one.
 
 ### Templates
 
@@ -355,6 +430,12 @@ before it is reported.
 failed and the Space fell back to something else. If it fell back to the source
 checkout, the whole layout is looking at that checkout's branch — fix the
 worktree (usually one already exists for that branch) rather than the file.
+
+**A `worktree:` tab is missing and a problem names a path.** Something is
+already at that tab's deterministic path, checked out at a different commit
+than `ref` asked for — the collision rule refuses to touch it rather than
+force-remove and recreate. The problem line names the exact command to run by
+hand if you mean to replace it: `git worktree remove --force <path>`.
 
 **A command sits at the prompt unrun.** That is what the plugin's own pacing
 exists to prevent; if it recurs, the shell is unusually slow to draw its

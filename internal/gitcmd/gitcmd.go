@@ -1,10 +1,21 @@
 // Package gitcmd shells out to git for what Herdr's own API does not answer:
-// which branches a repository has, what a new one should be based on, and
-// making a remote branch present locally before a worktree is built on it.
+// which branches a repository has, what a new one should be based on, making
+// a remote branch or ref present locally, and -- since #12's tab-level
+// `worktree:` -- laying out and inspecting the worktrees that pins a tab to.
 //
-// Nothing here writes to the working tree. Fetching updates remote-tracking
-// refs and branch listing only reads, so none of it can disturb whatever the
-// source checkout happens to have checked out.
+// This package now writes to disk. That is a deliberate change from what its
+// doc comment used to say here, and worth being honest about rather than
+// quietly stale: WorktreeAdd and WorktreeAddBranch call `git worktree add`,
+// which is the first thing in this package that creates anything. It exists
+// because Herdr's own worktree API cannot do what a tab's `worktree:` needs --
+// `herdr worktree create` always checks out a *named branch* it makes itself
+// (there is no `--detach`, and WorktreeRequest.Branch is documented as "the
+// name of the branch that gets made"), and every one of its calls is
+// Space-scoped: CreateWorktree returns a new Workspace, and `herdr worktree
+// remove` takes a workspace id, not a path. A tab's worktree is a directory a
+// tab points its cwd at, not a Space, so there is no Herdr call to reach for
+// here at all -- only git itself. Everything else in this package -- fetching,
+// listing branches -- still only reads.
 package gitcmd
 
 import (
@@ -166,6 +177,117 @@ func (r *Runner) FetchBranch(repoPath, branch string) error {
 	}
 	if _, err := r.run(repoPath, "git", "fetch", "origin", branch); err != nil {
 		return fmt.Errorf("git fetch origin %s (in %s): %w", branch, repoPath, err)
+	}
+	return nil
+}
+
+// FetchRef is FetchBranch's counterpart for a tab's `worktree: {ref: ...}`,
+// which can name a bare commit SHA rather than a branch -- GitHub allows
+// fetching one, and FetchBranch's "git fetch origin <branch>" is not that
+// call.
+//
+// A commit already present locally is the common case here: a re-run of a
+// setup whose worktree already exists at the right ref should not have to
+// reach the network to confirm that, and git itself refuses to fetch a ref it
+// already has with an error, not a quiet no-op. So a failed fetch is checked
+// against what is already on disk before it is reported -- rev-parse
+// resolving ref locally means there was nothing to fetch, which is success,
+// not a fetch that failed to do anything.
+func (r *Runner) FetchRef(repoPath, ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("no ref to fetch")
+	}
+	if _, err := r.run(repoPath, "git", "fetch", "origin", ref); err != nil {
+		if _, verifyErr := r.run(repoPath, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}"); verifyErr == nil {
+			return nil
+		}
+		return fmt.Errorf("git fetch origin %s (in %s): %w", ref, repoPath, err)
+	}
+	return nil
+}
+
+// ResolveRef resolves a ref to the commit SHA it currently names, in
+// repoPath. This is the other half of the collision rule in
+// internal/open/setup.go: comparing what a tab's `worktree:` asks for against
+// what is already checked out at its path needs both sides reduced to a
+// commit, since "main" and "a1b2c3d" are not comparable as strings even when
+// they name the same thing.
+func (r *Runner) ResolveRef(repoPath, ref string) (string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return "", fmt.Errorf("no ref to resolve")
+	}
+	out, err := r.run(repoPath, "git", "rev-parse", ref)
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s (in %s): %w", ref, repoPath, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// HeadCommit reports the commit SHA checked out at path, which for a
+// worktree already on disk is the other side of the collision rule's
+// comparison.
+func (r *Runner) HeadCommit(path string) (string, error) {
+	out, err := r.run(path, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD (in %s): %w", path, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// WorktreeAdd lays out a new worktree at path, detached at ref rather than on
+// a branch. Detached is the default a tab's `worktree:` takes (see
+// internal/setup's WorktreeSpec) precisely because a branch cannot be checked
+// out in two worktrees at once and moves under you if someone pushes to it
+// mid-review -- neither problem exists for a detached HEAD, which just is
+// whatever commit ref named at creation time.
+func (r *Runner) WorktreeAdd(repoPath, path, ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("no ref to check out")
+	}
+	if _, err := r.run(repoPath, "git", "worktree", "add", "--detach", path, ref); err != nil {
+		return fmt.Errorf("git worktree add --detach %s %s (in %s): %w", path, ref, repoPath, err)
+	}
+	return nil
+}
+
+// WorktreeAddBranch is WorktreeAdd's counterpart for `detach: false`: it
+// checks ref out as a branch rather than leaving HEAD detached, for the
+// single-tab case where the point is to commit on it. Only meaningful without
+// for_each in the picture -- a for_each tab repeating a constant branch would
+// have every element fight over the same checkout, which is stage two's
+// validation rule, not this function's problem.
+func (r *Runner) WorktreeAddBranch(repoPath, path, ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("no ref to check out")
+	}
+	if _, err := r.run(repoPath, "git", "worktree", "add", path, ref); err != nil {
+		return fmt.Errorf("git worktree add %s %s (in %s): %w", path, ref, repoPath, err)
+	}
+	return nil
+}
+
+// WorktreeRemove deletes a worktree Herdr's own API cannot reach: `herdr
+// worktree remove` only knows a workspace id, not a bare path, and a tab's
+// worktree is never a Space of its own. Wired for tests and for a future
+// cleanup story, but nothing in this package or internal/open calls it
+// automatically.
+//
+// That last part is deliberate and worth defending against a future edit: the
+// collision rule in internal/open/setup.go reports a mismatched worktree as a
+// failed tab rather than force-removing and recreating it, because the repo
+// owner confirmed exactly that during #12's design -- "I would rather it
+// accumulate predictably than get cleverly cleaned up and occasionally delete
+// something someone was using." Auto-forcing here would be precisely that
+// mistake. If you are tempted to wire force removal into the collision path,
+// don't -- that decision was made on purpose, not by omission.
+func (r *Runner) WorktreeRemove(repoPath, path string, force bool) error {
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, path)
+	if _, err := r.run(repoPath, "git", args...); err != nil {
+		return fmt.Errorf("git worktree remove (in %s): %w", repoPath, err)
 	}
 	return nil
 }

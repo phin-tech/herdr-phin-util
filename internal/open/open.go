@@ -252,7 +252,12 @@ type Fetcher interface {
 type Deps struct {
 	Session Session
 	PRs     PRLookup
-	Git     Fetcher
+	// Git's declared type is WorktreeGit (setup.go), a superset of Fetcher --
+	// the whole-Space paths above only ever call FetchBranch, but a tab's own
+	// worktree: (see applyWorktrees) needs the rest of it too, and gitcmd.New
+	// already implements all of it. Widening the field, not adding a second
+	// one, is what makes "one *gitcmd.Runner wired in main.go" still true.
+	Git WorktreeGit
 	// Layout is the extra slice of the API a setup needs: tabs, splits,
 	// commands and focus. Only the setup path uses it, so everything else in
 	// this package works with it nil.
@@ -588,7 +593,7 @@ func runAgentStep(deps Deps, cfg *config.Settings, tgt target.Target, opts Optio
 		if deps.Layout == nil {
 			return out, fmt.Errorf("setup %q needs a Herdr session to build panes in", opts.Setup.Name)
 		}
-		plan, panes, problems, err := applySetup(deps, cfg, tgt, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), data)
+		plan, panes, problems, err := applySetup(deps, cfg, tgt, *opts.Setup, root, out.WorkspaceID, spaceCwd(root, out.RepoPath), out.RepoPath, data)
 		out.SetupName = plan.Name
 		out.SetupPanes = panes
 		out.Warnings = append(out.Warnings, problems...)

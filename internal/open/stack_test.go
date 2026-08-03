@@ -248,7 +248,7 @@ func TestApplySetupResolvesLayersFromAGitHubPRTarget(t *testing.T) {
 
 	plan, panes, problems, err := applySetup(
 		Deps{Session: &fakeSession{}, Layout: l, PRs: prs}, &config.Settings{}, tgt,
-		forEachLayersSetup(), rootPane(), "w1", "/repo", nil)
+		forEachLayersSetup(), rootPane(), "w1", "/repo", "/repo", nil)
 	if err != nil {
 		t.Fatalf("applySetup: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestApplySetupForEachGhFailureIsAnErrorAndBuildsNothing(t *testing.T) {
 
 	_, _, _, err := applySetup(
 		Deps{Session: &fakeSession{}, Layout: l, PRs: prs}, &config.Settings{}, tgt,
-		forEachLayersSetup(), rootPane(), "w1", "/repo", nil)
+		forEachLayersSetup(), rootPane(), "w1", "/repo", "/repo", nil)
 	if err == nil {
 		t.Fatal("want an error when gh fails to resolve the stack")
 	}

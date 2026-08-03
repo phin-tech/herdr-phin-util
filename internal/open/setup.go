@@ -2,6 +2,7 @@ package open
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -100,8 +101,48 @@ func PreviewSetup(deps Deps, cfg *config.Settings, input string, def setup.Setup
 	if err != nil {
 		return setup.Plan{}, tgt, err
 	}
-	plan, err := def.ResolveData(cwd, setup.Data{Vars: data, Lists: lists})
+	// A tab's own worktree: needs somewhere to compute a path against too,
+	// and the promise this function makes -- nothing here creates, writes or
+	// focuses -- has to keep holding for it specifically: worktreePathFn
+	// below is pure string arithmetic over cfg and repoRoot, the same
+	// deterministic computation applySetup's pre-pass will later use to
+	// decide whether to create anything. It never touches disk on its own.
+	plan, err := def.ResolveData(cwd, setup.Data{Vars: data, Lists: lists, WorktreePath: worktreePathFn(cfg, tgt, repoRoot)})
 	return plan, tgt, err
+}
+
+// worktreePathFn closes over what internal/setup deliberately does not
+// import -- a *config.Settings and the repo root a worktree is cut from --
+// so ResolveData can compute a tab's worktree path without this package's
+// config dependency leaking into setup (see the doc comment on
+// setup.Data.WorktreePath).
+//
+// repoRoot empty means there is no repository to build a worktree in at all
+// (a plain or Linear target invoked outside a checkout) -- nil is returned
+// rather than a function that would always fail, so a setup with no
+// worktree: tab still costs nothing and a worktree: tab gets a clear "no
+// repository" error out of ResolveData rather than a path built from an
+// empty root.
+//
+// The real target is threaded through rather than a synthesised stand-in,
+// because [worktrees].path expands {host}, {owner} and {repo} from it. Those
+// are exactly the placeholders someone already uses in [repos].templates, so
+// a path like "~/wt/{host}/{owner}/{repo}/{ref}" is the obvious thing to
+// write here -- and a stand-in target would silently expand two of its three
+// segments to nothing.
+func worktreePathFn(cfg *config.Settings, tgt target.Target, repoRoot string) func(ref string) string {
+	if repoRoot == "" {
+		return nil
+	}
+	// A target that names no repository still has to fill {repo} with
+	// something, and the checkout's own directory name is what every other
+	// path in this plugin falls back to.
+	if tgt.Repo == "" {
+		tgt.Repo = filepath.Base(repoRoot)
+	}
+	return func(ref string) string {
+		return cfg.ResolveTabWorktreePath(tgt, repoRoot, ref)
+	}
 }
 
 // Layout is the slice of the Herdr API a setup needs on top of Session. It is
@@ -117,13 +158,42 @@ type Layout interface {
 	FocusPane(paneID string) error
 }
 
+// WorktreeGit is what a tab's own `worktree:` needs beyond Fetcher's
+// whole-Space FetchBranch: bringing an arbitrary ref down (not just a
+// branch), laying a worktree out, and answering what is already checked out
+// somewhere for the collision rule. gitcmd.Runner implements this the same
+// way it already implements Fetcher -- adding methods to *Runner is all
+// wiring this up needed, since Deps.Git's declared type is the only thing
+// that changed.
+//
+// This -- not Herdr's own worktree.* API -- is the only way #12 could be
+// built at all. herdr worktree create takes no --detach and always checks
+// out a named branch it makes itself (WorktreeRequest.Branch is documented as
+// "the name of the branch that gets made"), and every one of its calls is
+// Space-scoped: CreateWorktree returns a new Workspace, and worktree.remove
+// takes a workspace id, never a bare path. A tab's worktree is a directory a
+// tab points its cwd at, not a Space, so there was never a Herdr call to
+// route this through.
+type WorktreeGit interface {
+	Fetcher
+	FetchRef(repoPath, ref string) error
+	WorktreeAdd(repoPath, path, ref string) error
+	WorktreeAddBranch(repoPath, path, ref string) error
+	HeadCommit(path string) (string, error)
+	ResolveRef(repoPath, ref string) (string, error)
+}
+
 // applySetup builds a whole Space from a resolved plan.
 //
-// It runs in two passes, which is the shape herdr-plus arrived at and worth
-// keeping: every pane is created first, then every pane is given its command
-// or agent. Splitting a tab after something has started in it resizes a
-// running program, and a layout that visibly assembles itself before anything
-// starts is also the one that looks deliberate rather than sequential.
+// It runs in three passes now, not two: a tab's own worktree (see
+// applyWorktrees) has to exist before buildPanes calls CreateTab for it,
+// since Herdr's tab.create takes cwd at creation and there is no "cd into
+// this afterward" call. The other two passes are the shape herdr-plus arrived
+// at and worth keeping: every pane is created, then every pane is given its
+// command or agent. Splitting a tab after something has started in it
+// resizes a running program, and a layout that visibly assembles itself
+// before anything starts is also the one that looks deliberate rather than
+// sequential.
 //
 // Panes are independent, so a step that fails is reported and skipped rather
 // than ending the run: one agent that would not start is no reason for the
@@ -131,8 +201,10 @@ type Layout interface {
 // list for the caller to surface -- an error return would say the whole thing
 // failed, which is exactly the thing that was hardest to diagnose about a
 // half-built Space. Only a plan that cannot be resolved at all is an error,
-// since then nothing has been built to report on.
-func applySetup(deps Deps, cfg *config.Settings, tgt target.Target, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
+// since then nothing has been built to report on. A tab whose own worktree
+// failed to build follows the same contract: reported, that tab's panes
+// skipped, the rest of the layout still built.
+func applySetup(deps Deps, cfg *config.Settings, tgt target.Target, def setup.Setup, root herdr.Pane, workspaceID, cwd, repoRoot string, data map[string]string) (setup.Plan, []string, []string, error) {
 	l := deps.Layout
 
 	// Same source PreviewSetup uses (see its own comment): resolved only for
@@ -148,7 +220,7 @@ func applySetup(deps Deps, cfg *config.Settings, tgt target.Target, def setup.Se
 	if err != nil {
 		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
 	}
-	plan, err := def.ResolveData(cwd, setup.Data{Vars: data, Lists: lists})
+	plan, err := def.ResolveData(cwd, setup.Data{Vars: data, Lists: lists, WorktreePath: worktreePathFn(cfg, tgt, repoRoot)})
 	if err != nil {
 		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
 	}
@@ -156,11 +228,25 @@ func applySetup(deps Deps, cfg *config.Settings, tgt target.Target, def setup.Se
 		return plan, nil, nil, nil
 	}
 
+	// The new middle pass: every tab's own worktree exists (or is reported
+	// and skipped) before a single tab is created. See applyWorktrees for the
+	// collision rule this enforces. Not run at all when no step needs one --
+	// most setups -- so this costs nothing beyond a slice scan for the common
+	// case.
+	var abandonedWorktrees map[int]bool
+	var worktreeProblems []string
+	if anyStepNeedsAWorktree(plan) {
+		done := deps.Progress.step("worktrees", "Building worktrees")
+		abandonedWorktrees, worktreeProblems = applyWorktrees(deps.Git, plan, repoRoot)
+		done(nil)
+	}
+
 	// The two passes are the two things worth watching separately: the layout
 	// appearing, then each pane being given what it is for. The first is fast
 	// and the second is where the minutes go.
 	done := deps.Progress.step("panes", fmt.Sprintf("Building %s", countOf(len(plan.Steps), "pane")))
-	built, problems := buildPanes(l, plan, root, workspaceID)
+	built, problems := buildPanes(l, plan, root, workspaceID, abandonedWorktrees)
+	problems = append(worktreeProblems, problems...)
 	done(nil)
 
 	// The public shape (a plain []string, one id per step) is kept for
@@ -180,6 +266,101 @@ func applySetup(deps Deps, cfg *config.Settings, tgt target.Target, def setup.Se
 		_ = l.FocusPane(panes[focus])
 	}
 	return plan, panes, problems, nil
+}
+
+// anyStepNeedsAWorktree reports whether applyWorktrees has anything to do,
+// so a plan with no worktree: tab -- most of them -- skips the pass (and its
+// own progress line) entirely rather than doing a no-op scan disguised as
+// work.
+func anyStepNeedsAWorktree(plan setup.Plan) bool {
+	for _, step := range plan.Steps {
+		if step.Worktree != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// applyWorktrees is the pass applySetup runs between resolving the plan and
+// building any pane: every step whose Worktree is set (only a tab-opening
+// step ever carries one, see Step.Worktree's doc comment) gets its worktree
+// created, reused, or -- on a collision -- reported and abandoned, before
+// buildPanes gets anywhere near calling CreateTab for it.
+//
+// abandoned is keyed by Step.Tab, not by step index: buildPanes' own abandon
+// tracking works the same way, and a tab is what gets abandoned, not a single
+// step.
+func applyWorktrees(git WorktreeGit, plan setup.Plan, repoRoot string) (abandoned map[int]bool, problems []string) {
+	for _, step := range plan.Steps {
+		wt := step.Worktree
+		if wt == nil {
+			continue
+		}
+		if err := ensureWorktree(git, repoRoot, step.Cwd, wt.Ref, wt.Detach); err != nil {
+			if abandoned == nil {
+				abandoned = map[int]bool{}
+			}
+			abandoned[step.Tab] = true
+			problems = append(problems, fmt.Sprintf("worktree for tab %q: %v", stepTab(step), err))
+		}
+	}
+	return abandoned, problems
+}
+
+// ensureWorktree is the collision rule #12's design settled on, confirmed by
+// the repo owner during review rather than guessed at:
+//
+//   - path missing -> create it.
+//   - path exists and its HEAD matches ref -> reuse it, no-op.
+//   - path exists and its HEAD differs from ref -> report that tab as failed
+//     and skip it. This function never removes anything.
+//
+// That last point is the one worth defending against a future edit that
+// "fixes" it: `git worktree remove --force` then re-add would make a re-run
+// always succeed, and it is exactly the behaviour the issue ruled out --
+// "I would rather it accumulate predictably than get cleverly cleaned up and
+// occasionally delete something someone was using." A directory at this path
+// that is not what was asked for might be exactly that: something someone
+// else built or is still using. So a mismatch is a reported, actionable
+// failure -- the error names the precise command to run by hand -- never an
+// automatic one.
+//
+// ref is fetched before anything is compared, tolerating "already have it"
+// (see gitcmd.FetchRef): the common case is a worktree whose commit is
+// already present locally, and that must not need the network to confirm.
+func ensureWorktree(git WorktreeGit, repoRoot, path, ref string, detach bool) error {
+	if repoRoot == "" {
+		return fmt.Errorf("no repository to build a worktree in")
+	}
+	if err := git.FetchRef(repoRoot, ref); err != nil {
+		return fmt.Errorf("fetch %s: %w", ref, err)
+	}
+	wantSHA, err := git.ResolveRef(repoRoot, ref)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", ref, err)
+	}
+
+	if _, statErr := os.Stat(path); statErr == nil {
+		haveSHA, err := git.HeadCommit(path)
+		if err != nil {
+			return fmt.Errorf("read what is checked out at %s: %w", path, err)
+		}
+		if haveSHA == wantSHA {
+			// Reuse, no-op: this is the re-run case the deterministic naming
+			// scheme exists for.
+			return nil
+		}
+		return fmt.Errorf(
+			"%s is already a worktree checked out at %s, not %s (%s) -- if you mean to replace it, run: git worktree remove --force %s",
+			path, haveSHA, ref, wantSHA, path)
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("check %s: %w", path, statErr)
+	}
+
+	if detach {
+		return git.WorktreeAdd(repoRoot, path, ref)
+	}
+	return git.WorktreeAddBranch(repoRoot, path, ref)
 }
 
 // builtPane is what a step turned into once buildPanes has run: the pane id
@@ -208,7 +389,11 @@ type builtPane struct {
 // exist by the time this function returns, but an agent later in the plan
 // still starts later in fillPanes, so a labelled pane's *agent* is not
 // guaranteed to have attached yet, only its id and label.
-func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) ([]builtPane, []string) {
+// abandonedWorktrees names tabs whose own worktree failed to build, keyed by
+// Step.Tab -- the output of applyWorktrees, or nil when nothing in the plan
+// asked for one. buildPanes treats it as one more reason a tab gets abandoned,
+// alongside a CreateTab or SplitPane call that failed on its own.
+func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string, abandonedWorktrees map[int]bool) ([]builtPane, []string) {
 	built := make([]builtPane, len(plan.Steps))
 	var problems []string
 
@@ -248,8 +433,29 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 			built[i].PaneID = root.PaneID
 			built[i].TabID = root.TabID
 			tabID = root.TabID
+			if abandonedWorktrees[step.Tab] {
+				// Different from every other abandon reason here: there is no
+				// "reuse the Space's own tab" fallback to lose, because the
+				// Space's own tab and root pane exist no matter what -- only
+				// the *pinned* directory never got built (already reported by
+				// applyWorktrees). The root pane is used exactly as it would
+				// be otherwise, sitting in the Space's own directory rather
+				// than the one that was asked for. What is abandoned is the
+				// rest of *this* tab: a split whose cwd is the worktree path
+				// that never got created would only fail again, less clearly,
+				// once Herdr tried to use it.
+				abandoned = step.Tab
+			}
 
 		case step.NewTab:
+			if abandonedWorktrees[step.Tab] {
+				// No cwd to create this tab in -- its own worktree failed
+				// before CreateTab was ever attempted, already reported by
+				// applyWorktrees. Unlike FirstTab there is nothing here to
+				// fall back to: the tab itself was never going to exist.
+				abandoned = step.Tab
+				continue
+			}
 			pane, newTabID, err := l.CreateTab(workspaceID, step.Cwd, step.TabName, step.Env, false)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("create tab %q: %v", stepTab(step), err))
