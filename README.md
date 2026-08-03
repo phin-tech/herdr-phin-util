@@ -463,15 +463,24 @@ Only the names a setup's own `for_each` tabs mention are ever resolved — a
 setup with no `for_each` costs nothing extra, and `gh pr list` runs at most
 once per run even if several tabs repeat over `layers`.
 
-There is deliberately no *per-layer* `worktree` yet: `worktree:` on a tab
-(below) works on an ordinary tab, one ref to one worktree, but a `for_each`
-tab whose `ref` varies per element still needs two validation rules this
-version does not enforce (a constant `ref`, or `detach: false`, inside a
-`for_each` tab are both always mistakes) and is not built here. Until then,
-`for_each` over `layers` is usable for anything that does not need a distinct
-checkout per layer (reading a diff, prompting an agent with the PR's own
-metadata), but does not by itself remove a script that builds one worktree
-per layer.
+A `for_each` tab can give every layer its own checkout, by putting `worktree:`
+on the repeated tab with a `ref` that varies per element — one worktree per
+stacked PR layer, which is what replaces a bootstrap script:
+
+```yaml
+  - for_each: layers
+    as: layer
+    name: "L{{.layer_index}} #{{.layer_pr}}"
+    worktree: {ref: "{{.layer_head_sha}}"}
+    panes: [{agent: claude, submit: true, prompt: "Review #{{.layer_pr}}"}]
+```
+
+Two rules are enforced at load, since both are always mistakes and both cost
+real disk before anyone would notice: a `ref` that does not name the element
+(a constant ref builds the same worktree N times, so the element went unused),
+and `detach: false` inside a `for_each` tab (a branch cannot be checked out in
+two worktrees at once, so every element after the first fails). Outside a
+`for_each`, `detach: false` stays legitimate.
 
 **`worktree:` pins an ordinary tab to a ref of its own:**
 

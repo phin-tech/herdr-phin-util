@@ -6,6 +6,29 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.11.0 — 2026-08-03
+
+A `for_each` tab can give every layer its own checkout.
+
+- `worktree:` on a repeated tab now works: a `ref` that varies per element
+  builds one worktree per element, which is the piece that finally replaces
+  a bootstrap script rather than shrinking it. Everything it needed --
+  per-iteration `ref` rendering, deterministic naming, the pre-pass, the
+  collision rule -- landed in 0.9.0 already shaped for this; the only thing
+  missing was refusing the two ways of getting it wrong.
+- A `ref` that does not name the element is rejected at load. A constant ref
+  builds the same worktree once per element, which means the element was
+  never used at all. Checked against the unrendered template, by asking
+  whether it mentions this tab's own `{{.<as>_...}}` prefix -- the same bar
+  the `focus` rule holds itself to, and deliberately loose in the same
+  direction: it errs toward accepting, since wrongly blocking a setup that
+  is right would be worse than missing one that is subtly wrong.
+- `detach: false` inside a `for_each` tab is rejected too. A branch cannot be
+  checked out in two worktrees at once, so every element after the first
+  would fail in git. Detached is the default precisely so this is not the
+  common shape, and outside a `for_each` it stays perfectly legitimate --
+  one tab committing on a branch is what it is for.
+
 ## 0.10.0 — 2026-08-03
 
 A stack GitHub knows about is read from GitHub; everything else is still
