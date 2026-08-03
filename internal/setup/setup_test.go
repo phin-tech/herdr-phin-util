@@ -169,6 +169,21 @@ func TestValidate(t *testing.T) {
 			"no match to wait for",
 		},
 		{
+			"on_launch without an agent",
+			Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{OnLaunch: []OnLaunchStep{{Match: "Do you trust", Keys: []string{"1", "Enter"}}}}}}}},
+			"on_launch but no agent to launch",
+		},
+		{
+			"on_launch with a blank match",
+			Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{Agent: "codex", OnLaunch: []OnLaunchStep{{Match: "  ", Keys: []string{"1"}}}}}}}},
+			"on_launch 1 has no match to wait for",
+		},
+		{
+			"on_launch with no keys",
+			Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{Agent: "codex", OnLaunch: []OnLaunchStep{{Match: "Do you trust"}}}}}}},
+			"on_launch 1 has no keys to send",
+		},
+		{
 			"two focused panes",
 			Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{Focus: true}, {Split: "down", Focus: true}}}}},
 			"only one can be",

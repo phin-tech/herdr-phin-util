@@ -175,6 +175,58 @@ will read. The usual shape of a good fan-out setup is workers with
 `submit: true` and one orchestrator without, so the workers are already going
 by the time you have read the brief.
 
+### on_launch: answering a startup modal
+
+Some agents put up a modal the first time they run in a directory —
+codex's "Do you trust the contents of this directory?" is the one this
+exists for. Left alone, the plugin's readiness check can be fooled by it (see
+"When it does not work" below): the prompt gets typed into the dialog
+instead of the agent, and the pane looks alive with nothing sent.
+
+`on_launch:` answers a modal you already know the shape of, before the
+prompt is typed:
+
+```yaml
+- agent: codex
+  on_launch:
+    - match: "Do you trust"
+      keys: ["1", "Enter"]
+  prompt: |
+    Review this PR...
+```
+
+Each entry waits briefly for `match` to appear on screen and, if it does,
+sends `keys` — Herdr key names, the same vocabulary `herdr pane send-keys`
+takes, passed through verbatim. `timeout_ms` overrides the wait per entry
+(default a few seconds: the modal is drawn immediately by the agent process
+or not at all, so there is nothing later a longer wait would catch). A
+match that never appears is **not an error** — most runs are in a directory
+already trusted, and that has to stay the common, silent case. Several
+entries run in order, each waiting for its own match before the next one's
+wait starts.
+
+**This is opt-in, and stays opt-in on purpose.** Auto-answering a security
+prompt is not a default a plugin gets to choose on your behalf, even for a
+worktree it just created itself — that is exactly the shortcut #18 ruled
+out, and it is why codex's own `-c 'projects."<path>".trust_level=...'`
+override is deliberately ignored by codex when it comes from project-local
+config: an untrusted directory should not be able to authorize itself.
+`on_launch:` only ever sends keys you wrote into the file yourself, to a
+match you named yourself.
+
+The codex snippet above is the one to copy for `worktree:` tabs, which are a
+fresh path every time (see #12, #18) and so hit this modal far more than the
+Space's own checkout ever did.
+
+**A pane that is still on a modal fails visibly.** Whatever else is on
+screen, text naming a known modal (see the plugin's `blockedMarkers`) means
+the pane is not promptable — `agent start` reporting `idle` does not
+override it. That pane's step is reported as failed and the pane itself is
+renamed `failed: <label>`, rather than silently losing its prompt into the
+dialog. `on_launch:` running first is what usually keeps that from
+happening at all; the visible failure is the fallback for when it does not
+apply, or does not work.
+
 ### for_each: repeating a tab
 
 A tab can build itself once per element of a **named list** instead of once.
@@ -458,12 +510,21 @@ agent; `model` and `args` need an agent; an agent and a command cannot share a
 pane; only one pane may be `focus`; `focus: true` is rejected inside a
 `for_each` tab outright; `as:` requires a `for_each:` on the same tab; a
 `for_each:` with nothing after it (once trimmed) is rejected rather than
-silently treated as "no for_each".
+silently treated as "no for_each"; `on_launch:` needs an agent, same as
+`prompt:`; each `on_launch:` entry needs both a `match` and at least one
+`keys`.
 
 **The agent rejected a flag.** `model` and `args` are passed through
 untouched, so an unknown model name or a flag that kind does not have is that
 agent's own error, visible in the pane. `--dry-run` prints the exact argv under
 `args`.
+
+**A pane is labelled `failed: ...` and its prompt never arrived.** As of
+0.13.0 this can mean a startup modal was still on screen when the plugin
+would otherwise have typed into the pane — `agent start` reporting `idle` is
+not enough on its own to prove a pane is promptable, only that nothing else
+looked wrong. Check what the pane is actually showing; if it is a modal you
+recognise, `on_launch:` (above) is how to answer it.
 
 **The layout builds but a prompt is blank.** A placeholder is misspelled, or
 the field is empty for that target kind. `--dry-run` shows it.

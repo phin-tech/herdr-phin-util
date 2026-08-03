@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -521,6 +522,46 @@ func TestDescribeShowsTheAgentCommandLine(t *testing.T) {
 	got := strings.Join(plan.Describe(), "\n")
 	if !strings.Contains(got, `args    "--model" "opus" "--permission-mode" "plan"`) {
 		t.Errorf("--dry-run does not show the command line:\n%s", got)
+	}
+}
+
+// A preview that hid on_launch: would misrepresent what the run actually
+// does with a pane that has it -- the whole reason to run --dry-run first
+// against a setup that pokes at a security prompt.
+func TestDescribeShowsOnLaunchEntries(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{
+		Agent: "codex",
+		OnLaunch: []OnLaunchStep{
+			{Match: "Do you trust", Keys: []string{"1", "Enter"}, TimeoutMs: 5000},
+		},
+	}}}}}
+	plan, err := s.Resolve("/repo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(plan.Describe(), "\n")
+	if !strings.Contains(got, `on_launch if "Do you trust" -> keys 1 Enter (5000ms)`) {
+		t.Errorf("--dry-run does not show the on_launch entry:\n%s", got)
+	}
+}
+
+// A missing timeout_ms falls back to DefaultOnLaunchTimeoutMs, and the
+// preview should say so rather than print a false 0ms.
+func TestDescribeFillsInTheDefaultOnLaunchTimeout(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{
+		Agent:    "codex",
+		OnLaunch: []OnLaunchStep{{Match: "Do you trust", Keys: []string{"1"}}},
+	}}}}}
+	plan, err := s.Resolve("/repo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(plan.Describe(), "\n")
+	want := fmt.Sprintf("(%dms)", DefaultOnLaunchTimeoutMs)
+	if !strings.Contains(got, want) {
+		t.Errorf("--dry-run = %q, want the default timeout %q", got, want)
 	}
 }
 

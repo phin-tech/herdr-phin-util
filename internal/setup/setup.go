@@ -93,6 +93,37 @@ type WaitFor struct {
 // DefaultWaitTimeoutMs is used when a wait_for names a match but no timeout.
 const DefaultWaitTimeoutMs = 30000
 
+// OnLaunchStep answers one modal a freshly started agent might put up before
+// its real input is ready -- codex's "Do you trust the contents of this
+// directory" chief among them (see #18). It runs after the agent starts and
+// before readiness is finally decided: wait up to TimeoutMs for Match to
+// render, and if it does, send Keys.
+//
+// A match that never appears is deliberately not an error -- see
+// startSetupAgent's runOnLaunch in internal/open/setup.go. The common case is
+// a directory the agent has already been trusted in, where no modal comes up
+// at all, and failing the pane over that would make the opt-in worse than
+// the bug it answers.
+//
+// Keys are Herdr key names, passed to pane.send_keys verbatim -- the same
+// vocabulary `herdr pane send-keys` takes. No translation layer: a setup
+// author who knows what keys the agent's own dialog wants should not also
+// have to learn a second naming scheme for them here.
+type OnLaunchStep struct {
+	Match     string   `yaml:"match"`
+	Keys      []string `yaml:"keys"`
+	TimeoutMs int      `yaml:"timeout_ms"`
+}
+
+// DefaultOnLaunchTimeoutMs bounds how long one on_launch entry waits for its
+// match before moving on without sending anything. Short on purpose: unlike
+// wait_for, which is watching for work a command or another agent still has
+// to do, a startup modal is drawn immediately by the agent process itself or
+// not at all -- there is nothing later for a long wait to catch that a short
+// one would miss, only extra seconds spent on the common case where no modal
+// shows up.
+const DefaultOnLaunchTimeoutMs = 3000
+
 // Pane is one pane in a tab.
 //
 // The three shapes it can take are mutually exclusive: an agent (with a prompt
@@ -138,6 +169,14 @@ type Pane struct {
 	Focus bool `yaml:"focus"`
 
 	WaitFor *WaitFor `yaml:"wait_for"`
+
+	// OnLaunch answers a known first-run modal before the prompt above is
+	// typed -- see OnLaunchStep. Deliberately not a default for any agent
+	// kind, codex's trust prompt included: auto-answering a security prompt
+	// on the user's behalf is not a default a plugin gets to choose, even
+	// for a directory it created itself, so a setup opts in explicitly by
+	// naming the exact match and keys it wants sent.
+	OnLaunch []OnLaunchStep `yaml:"on_launch"`
 }
 
 // WorktreeSpec pins a tab to a git ref of its own, checked out in a worktree
@@ -359,6 +398,17 @@ func (s Setup) Validate() []string {
 			}
 			if pane.WaitFor != nil && strings.TrimSpace(pane.WaitFor.Match) == "" {
 				add("%s: wait_for has no match to wait for", at)
+			}
+			if pane.Agent == "" && len(pane.OnLaunch) > 0 {
+				add("%s has on_launch but no agent to launch", at)
+			}
+			for oi, ol := range pane.OnLaunch {
+				if strings.TrimSpace(ol.Match) == "" {
+					add("%s: on_launch %d has no match to wait for", at, oi+1)
+				}
+				if len(ol.Keys) == 0 {
+					add("%s: on_launch %d has no keys to send", at, oi+1)
+				}
 			}
 			if pane.Focus {
 				if forEach != "" {

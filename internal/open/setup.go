@@ -781,13 +781,84 @@ func startSetupAgent(s Session, cfg *config.Settings, step setup.Step, paneID st
 	if err := s.WaitAgentIdle(paneID); err != nil {
 		return fmt.Errorf("wait for %s in tab %q: %w", kind, stepTab(step), err)
 	}
+
+	// on_launch runs here: after the agent has started, before readiness is
+	// finally decided by anything below, and before any prompt is typed. A
+	// setup that named one is trying to clear a known modal (codex's trust
+	// prompt, by the motivating example) before the checks below run into
+	// it -- see runOnLaunch. Empty and a no-op for almost every setup, since
+	// this is opt-in (see OnLaunchStep's doc comment for why it is not a
+	// default).
+	runOnLaunch(s, paneID, step.OnLaunch)
+
 	if marker, ok := readyMarkers[kind]; ok {
 		if err := s.WaitPaneOutput(paneID, marker, readyMarkerTimeoutMs); err != nil {
 			return fmt.Errorf("wait for %s in tab %q to render its prompt: %w", kind, stepTab(step), err)
 		}
 	}
+	// checkBlockedMarkers runs last of the on-screen checks, and it wins over
+	// everything above: a pane on_launch answered but that is *still* showing
+	// a blocked marker -- or one that had no on_launch at all -- must fail
+	// visibly here rather than have its prompt typed into whatever is on
+	// screen. See blockedMarkers (open.go) for why this, and not a better
+	// positive marker, is the fix.
+	if err := checkBlockedMarkers(s, paneID, kind); err != nil {
+		return fmt.Errorf("tab %q: %w", stepTab(step), err)
+	}
 	if err := waitAgentLaunched(s, paneID); err != nil && needsPrompting {
 		return fmt.Errorf("wait for %s in tab %q to finish launching: %w", kind, stepTab(step), err)
+	}
+	return nil
+}
+
+// runOnLaunch answers whatever known modal is on screen for a pane that has
+// just started its agent. It reuses WaitPaneOutput -- the same
+// match-pane-output plumbing wait_for already proves works (see
+// fillPanes' step.WaitFor handling) -- rather than writing a second poller:
+// for each entry, wait up to its own TimeoutMs for Match to render, and if
+// it does, send Keys.
+//
+// A match that never appears within its timeout is not reported as an
+// error and does not stop the remaining entries or fail the pane. That is
+// deliberate, not a gap: the common case is a directory the agent has
+// already been trusted in, where no modal comes up at all, and an on_launch
+// entry exists to answer a modal *if* one shows up, not to assert that one
+// will.
+func runOnLaunch(s Session, paneID string, entries []setup.OnLaunchStep) {
+	for _, entry := range entries {
+		if err := s.WaitPaneOutput(paneID, entry.Match, entry.TimeoutMs); err != nil {
+			continue
+		}
+		// Best effort: if the keypress itself fails to land, the pane is
+		// still sitting on whatever it was sitting on, and the
+		// checkBlockedMarkers call after on_launch runs is what turns that
+		// into a visible failure rather than a silently eaten prompt.
+		_ = s.SendKeys(paneID, entry.Keys...)
+	}
+}
+
+// checkBlockedMarkers reports an error naming the on-screen text if paneID
+// is currently showing one of kind's blockedMarkers (open.go) -- a modal
+// that means the pane is not promptable no matter what a positive marker
+// says. Called after on_launch has had its chance to clear a known modal, so
+// this is the check that decides whether that attempt actually worked.
+//
+// A kind with no entry in blockedMarkers, or a ReadPane call that itself
+// failed, is treated as not blocked: this function only ever turns a
+// confirmed sighting into an error, never a missing answer into one.
+func checkBlockedMarkers(s Session, paneID, kind string) error {
+	markers, ok := blockedMarkers[kind]
+	if !ok {
+		return nil
+	}
+	screen, err := s.ReadPane(paneID, "visible", blockedMarkerReadLines)
+	if err != nil {
+		return nil
+	}
+	for _, marker := range markers {
+		if strings.Contains(screen, marker) {
+			return fmt.Errorf("%s is showing %q -- a modal is up and the pane cannot be prompted", kind, marker)
+		}
 	}
 	return nil
 }

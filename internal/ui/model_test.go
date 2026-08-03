@@ -61,6 +61,10 @@ func (f *fakeSession) StartAgent(paneID, name, kind string, args []string) error
 func (f *fakeSession) WaitAgentIdle(paneID string) error                        { return nil }
 func (f *fakeSession) WaitPaneOutput(paneID, value string, timeoutMs int) error { return nil }
 func (f *fakeSession) AgentLaunched(paneID string) (bool, error)                { return true, nil }
+func (f *fakeSession) ReadPane(paneID, source string, lines int) (string, error) {
+	return "", nil
+}
+func (f *fakeSession) SendKeys(paneID string, keys ...string) error { return nil }
 func (f *fakeSession) SendText(paneID, text string) error {
 	f.sendTextCalls = append(f.sendTextCalls, text)
 	return nil

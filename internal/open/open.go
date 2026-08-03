@@ -36,6 +36,15 @@ type Session interface {
 	WaitPaneOutput(paneID, value string, timeoutMs int) error
 	AgentLaunched(paneID string) (bool, error)
 	SendText(paneID, text string) error
+	// ReadPane returns what a pane currently shows -- what checkBlockedMarkers
+	// (internal/open/setup.go) reads to answer "is a modal up", and what
+	// runOnLaunch would read too if it needed to, though it reuses
+	// WaitPaneOutput instead (see that function's comment).
+	ReadPane(paneID, source string, lines int) (string, error)
+	// SendKeys presses real keys in a pane, by Herdr's key names -- the send
+	// half of an on_launch entry, once WaitPaneOutput below says its match
+	// rendered.
+	SendKeys(paneID string, keys ...string) error
 }
 
 // readyMarkers is on-screen text that means "this agent kind is actually
@@ -75,6 +84,42 @@ var readyMarkers = map[string]string{
 // WaitAgentIdle already succeeded, so this is just confirming the render
 // caught up -- generous, but far short of a whole startup budget.
 const readyMarkerTimeoutMs = 30000
+
+// blockedMarkers is on-screen text that means a modal is up over the agent's
+// real input -- not promptable, whatever else is on screen -- checked after
+// the readyMarkers wait above, and winning when both are true: a pane on a
+// blocked marker is not ready even if a positive marker also happens to be
+// present somewhere in scrollback.
+//
+// This is the fix #18 asked for after readyMarkers stopped being enough on
+// its own. A positive marker is a bet on text a modal's screens *lack* --
+// the whole footer-under-the-input argument in the comment above is exactly
+// that bet, made once, on measurement -- and #18 is that bet losing: codex
+// 0.146.0 puts a 2.4k-character review brief into the trust dialog even
+// though readyMarkers["codex"] gated on the footer. Either the footer now
+// renders on the trust screen too, or WaitPaneOutput is matching scrollback
+// that still has an earlier positive render in it. Either way, no amount of
+// swapping in a cleverer positive marker fixes the class of bug: any text a
+// modal does not currently have is text a future codex build can start
+// drawing anyway. A negative marker does not have that failure mode -- it
+// asserts on text the modal *does* have, right now, on screen, so it keeps
+// working even if codex's gate screens grow a footer of their own.
+//
+// Kept to a short, stable fragment ("Do you trust", not the paragraph after
+// it) for the same reason: the sentence around it is exactly the kind of
+// text a UI copy pass rewords, and the fragment is chosen to survive that.
+var blockedMarkers = map[string][]string{
+	"codex": {"Do you trust"},
+}
+
+// blockedMarkerReadLines is how much of a pane's visible screen
+// checkBlockedMarkers reads looking for a blocked marker. Generous on
+// purpose: codex's trust and update screens are drawn as a menu with several
+// lines of explanation above the prompt, not a single line, so reading only
+// a handful of rows -- the way the quick "has anything been typed yet"
+// checks elsewhere in this codebase do -- risks missing text sitting below
+// the fold.
+const blockedMarkerReadLines = 100
 
 // sleep is the retry backoff, swapped out in tests so they do not spend real
 // seconds waiting.
@@ -498,14 +543,21 @@ func waitAgentDrawn(s Session, paneID, kind string) error {
 	if err := s.WaitAgentIdle(paneID); err != nil {
 		return fmt.Errorf("wait for agent: %w", err)
 	}
-	marker, ok := readyMarkers[kind]
-	if !ok {
-		return nil
+	if marker, ok := readyMarkers[kind]; ok {
+		if err := s.WaitPaneOutput(paneID, marker, readyMarkerTimeoutMs); err != nil {
+			return fmt.Errorf("wait for agent to render its prompt: %w", err)
+		}
 	}
-	if err := s.WaitPaneOutput(paneID, marker, readyMarkerTimeoutMs); err != nil {
-		return fmt.Errorf("wait for agent to render its prompt: %w", err)
-	}
-	return nil
+	// The blocked-marker check runs for every kind, including one with no
+	// positive marker to wait on -- which is why it sits after that lookup
+	// rather than inside it. A modal is reachable here exactly as it is in a
+	// setup: `open <pr-url>` with no --setup cuts a worktree that is a
+	// directory the agent has never seen, which is the whole trigger #18
+	// describes. There is no on_launch to answer it on this path (that is a
+	// pane field, and this path has no setup file), so the most it can do is
+	// refuse to type into the dialog -- which is still the difference between
+	// a visible failure and a silently eaten prompt.
+	return checkBlockedMarkers(s, paneID, kind)
 }
 
 // createOrOpenWorktree tries to make a new worktree, and falls back to

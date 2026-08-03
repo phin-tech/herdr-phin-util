@@ -380,10 +380,10 @@ works for a PR, an issue, a Linear ticket or a plain checkout.
 | neither | a shell at its prompt |
 
 Also per pane: `split` (`right`/`down`), `ratio`, `label`, `cwd`, `env`,
-`focus`, `wait_for`, and on an agent pane `model:` and `args:`. `cwd` and `env`
-inherit setup → tab → pane. A tab takes `command:` directly instead of
-`panes:` when it's one command and nothing else, and a tab with neither is one
-plain shell.
+`focus`, `wait_for`, `on_launch`, and on an agent pane `model:` and `args:`.
+`cwd` and `env` inherit setup → tab → pane. A tab takes `command:` directly
+instead of `panes:` when it's one command and nothing else, and a tab with
+neither is one plain shell.
 
 - `submit: true` presses Enter. **Omitted means type it and leave it** — read
   the orchestrator's brief before firing it, while the workers are already going.
@@ -393,6 +393,21 @@ plain shell.
   sitting idle with nothing typed.
 - `wait_for: { match: "queued", timeout_ms: 20000 }` holds the rest of the
   layout until that pane's output matches. A timeout isn't fatal.
+- `on_launch: [{ match: "Do you trust", keys: ["1", "Enter"] }]` answers a
+  known first-run modal — codex's directory-trust prompt, by name — before
+  the prompt above is typed. Each entry waits briefly (`timeout_ms`,
+  default a few seconds) for `match`, and if it renders, sends `keys` via
+  the same key names `herdr pane send-keys` takes. A match that never shows
+  up is **not an error** — most directories are already trusted, and that
+  has to stay the silent, common case. **Opt-in on purpose**: auto-answering
+  a security prompt is not a default this plugin gets to choose for you,
+  even in a worktree it just created — you write the match and keys
+  yourself. It exists because `worktree:` (below) makes a fresh, never-seen
+  directory the *normal* case for a tab, not the rare one, and codex's own
+  trust gate has no way to trust a whole class of paths at once. Whatever
+  else is on screen, a pane still showing a known modal after this runs
+  fails visibly — `failed: <label>` in the Space — rather than silently
+  losing its prompt into the dialog.
 - `model: opus` and `args: ["--permission-mode", "plan"]` are the agent's
   command line: `model` first, then `args` verbatim. This is how a reviewer is
   made **read-only** — a prompt that says "don't edit anything" is a request,
@@ -778,9 +793,19 @@ Herdr API gotchas that shaped the code:
 - Plugin actions run **asynchronously**. `plugin action invoke` returns
   `status: "running"`; the outcome shows up in `herdr plugin log list`.
 - `agent.wait`'s `idle` status is Herdr's activity guess and can fire during a
-  lull before the agent has drawn its prompt. For `claude` the prompt is also
-  confirmed against real screen content via `pane.wait_for_output`
-  (`internal/open`'s `readyMarkers`); other kinds fall back to `agent.wait`.
+  lull before the agent has drawn its prompt. For `claude` and `codex` the
+  prompt is also confirmed against real screen content via
+  `pane.wait_for_output` (`internal/open`'s `readyMarkers`); other kinds fall
+  back to `agent.wait`.
+- A positive marker rendering does not prove a pane is promptable — it only
+  proves that text is *somewhere* on screen or in matched scrollback, and a
+  modal codex draws over its own input can render the same footer the marker
+  waits for (see #18). `internal/open`'s `blockedMarkers` is the other half:
+  on-screen text a known modal *has*, checked after `readyMarkers` and
+  winning when both match, so a pane sitting on that modal fails the setup
+  step visibly instead of getting a prompt typed into the dialog. Setup
+  authors get `on_launch:` (above) to answer a known modal before this check
+  runs at all.
 - `agent.start` can reject a pane with `agent_pane_busy` in the instant after
   `worktree.create`/`workspace.create` returns it. Retried with a short linear
   backoff (`startAgentWithRetry`); other errors aren't.

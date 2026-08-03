@@ -6,6 +6,60 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.13.0 — 2026-08-03
+
+A pane sitting on a modal now fails loudly instead of losing its prompt into
+it ([#18], the same class of bug #4 and #6 fixed for their own triggers).
+
+- `worktree:` (0.9.0, and 0.11.0's `for_each` version of it) turned this from
+  a rare first-run hiccup into a constant one: every `worktree:` tab is a
+  fresh path keyed on a ref, so a four-layer stack review is four directories
+  codex has never seen, and because the path is keyed on the commit, the next
+  push re-rolls every one of them and asks again. A setup that reviews a
+  stack could lose every reviewer's brief on every push.
+- 0.4.1 and 0.6.0 already tried to close this gap with `readyMarkers` — text
+  the input draws that a startup screen does not, measured against a live
+  codex and waited for before typing anything. That measurement still holds,
+  but #18 shows the fix built on it stopped discriminating: on codex 0.146.0
+  the review brief landed in the trust dialog anyway, which only happens if
+  the marker rendered (or matched) while the dialog was still up. Swapping in
+  a different positive marker would be the same bet again — text a modal
+  currently lacks is not a stable thing to depend on, since nothing stops a
+  future codex build from drawing it too.
+- So the fix is a different kind of check, not a better guess at the old
+  kind: `blockedMarkers`, on-screen text a known modal *has* — codex's "Do
+  you trust" — checked after the `readyMarkers` wait and overriding it. A
+  pane showing blocked text is not ready no matter what else is on screen,
+  and `startSetupAgent` now returns an error naming exactly what it saw,
+  which is what turns a silently eaten brief into a warning and a pane
+  labelled `failed: <name>` in the built Space.
+- A setup can also answer a modal it recognises, with a new per-pane
+  `on_launch:` — a list of `{match, keys}` pairs that wait briefly for
+  `match` to render and, if it does, send `keys` (Herdr key names, verbatim,
+  the same vocabulary `herdr pane send-keys` takes) before the prompt is
+  typed and before readiness is decided for good. A match that never shows
+  up is not an error — most directories are already trusted, and that has to
+  stay the silent, common case — so this only ever helps, never adds a new
+  way to fail. It reuses `wait_for`'s own `pane.wait_for_output` plumbing
+  rather than a second poller.
+- Deliberately **not shipped**: auto-answering codex's trust prompt by
+  default, and writing `~/.codex/config.toml` to pre-trust a worktree the
+  plugin just created. Both were on #18's own list and both were rejected
+  there for the same reason — a plugin does not get to clear a security
+  prompt on the user's behalf, even for a directory it made itself, and
+  codex already refuses to let project-local config self-authorize for
+  exactly that reason. `on_launch:` is opt-in instead: the setups skill and
+  README now carry the codex trust snippet verbatim, one copy-paste away for
+  anyone who wants it.
+- The same refusal applies with no setup at all. `open <pr-url>` cuts a
+  worktree that is a directory the agent has never seen, which is the same
+  trigger, so `waitAgentDrawn` checks the modal markers too. There is no
+  `on_launch` to answer it on that path -- that is a pane field, and there is
+  no file -- so the most it can do is decline to type into the dialog, which
+  is still the difference between a visible failure and a lost prompt.
+  Leaving it out would have made the fix depend on whether you happened to
+  pass `--setup`.
+
 ## 0.12.0 — 2026-08-03
 
 `applies_to: [github_stack]` now means what it says ([#14]) — the part of
@@ -493,3 +547,4 @@ Setups no longer half-build a Space in silence ([#3]).
 [#12]: https://github.com/phin-tech/herdr-phin-util/issues/12
 [#13]: https://github.com/phin-tech/herdr-phin-util/issues/13
 [#14]: https://github.com/phin-tech/herdr-phin-util/issues/14
+[#18]: https://github.com/phin-tech/herdr-phin-util/issues/18
