@@ -590,3 +590,194 @@ func TestDescribeNamesNoHerdrVariablesForAnAgentOnlyPlan(t *testing.T) {
 		t.Errorf("Describe() named Herdr variables for an agent-only plan:\n%s", out)
 	}
 }
+
+// worktreeData builds a Data whose WorktreePath is the same deterministic
+// scheme internal/config's ResolveTabWorktreePath implements -- repo root and
+// ref alone, nothing else -- so these tests do not need a *config.Settings
+// (which internal/setup deliberately does not import) to exercise the
+// rendering and plumbing ResolveData is responsible for.
+func worktreeData(vars map[string]string) Data {
+	return Data{
+		Vars: vars,
+		WorktreePath: func(ref string) string {
+			return "/repo/.herdr-worktrees/" + ref
+		},
+	}
+}
+
+// Ref renders as a template in the same per-iteration pass as a tab's cwd --
+// the thing that is supposed to make a later for_each tab's varying ref work
+// for free.
+func TestResolveDataRendersTheWorktreeRefAsATemplate(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "{{.Branch}}"}, Panes: []Pane{{}}},
+	}}
+
+	plan, err := s.ResolveData("/repo", worktreeData(map[string]string{"Branch": "main"}))
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+	if plan.Steps[0].Worktree == nil {
+		t.Fatal("want the first step to carry the rendered worktree spec")
+	}
+	if plan.Steps[0].Worktree.Ref != "main" {
+		t.Errorf("Ref = %q, want the template rendered", plan.Steps[0].Worktree.Ref)
+	}
+}
+
+// The path is deterministic -- the same repo root and ref must resolve to the
+// same path every time, which is what makes a re-run reuse rather than
+// accumulate a fresh worktree.
+func TestResolveDataWorktreePathIsDeterministicAcrossResolutions(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "main"}, Panes: []Pane{{}}},
+	}}
+
+	first, err := s.ResolveData("/repo", worktreeData(nil))
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+	second, err := s.ResolveData("/repo", worktreeData(nil))
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+	if first.Steps[0].Cwd != second.Steps[0].Cwd {
+		t.Errorf("two resolutions disagreed on the worktree path: %q vs %q", first.Steps[0].Cwd, second.Steps[0].Cwd)
+	}
+	if first.Steps[0].Cwd != "/repo/.herdr-worktrees/main" {
+		t.Errorf("Cwd = %q, want the deterministic worktree path", first.Steps[0].Cwd)
+	}
+}
+
+// Step.Worktree is only ever set on the step that opens the tab -- a split
+// pane in the same tab must not carry it, since a worktree is created once
+// per tab, not once per pane.
+func TestResolveDataSetsWorktreeOnlyOnTheTabOpeningStep(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "main"}, Panes: []Pane{
+			{},
+			{Split: "down", Command: "echo hi"},
+		}},
+	}}
+
+	plan, err := s.ResolveData("/repo", worktreeData(nil))
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+	if plan.Steps[0].Worktree == nil {
+		t.Fatal("want the tab-opening step to carry the worktree spec")
+	}
+	if plan.Steps[1].Worktree != nil {
+		t.Errorf("the split step also carried a worktree spec: %+v", plan.Steps[1].Worktree)
+	}
+}
+
+// A worktree: tab that also sets cwd: is rejected outright: they are two
+// answers to the same question, not a precedence rule.
+func TestValidateRejectsCwdAndWorktreeTogether(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Cwd: "sub", Worktree: &WorktreeSpec{Ref: "main"}},
+	}}
+
+	problems := s.Validate()
+	found := false
+	for _, p := range problems {
+		if strings.Contains(p, "cwd") && strings.Contains(p, "worktree") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("problems = %v, want one naming both cwd and worktree", problems)
+	}
+}
+
+// worktree: with a blank ref is rejected -- there is nothing to check out.
+func TestValidateRejectsAWorktreeWithAnEmptyRef(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "   "}},
+	}}
+
+	problems := s.Validate()
+	found := false
+	for _, p := range problems {
+		if strings.Contains(p, "ref") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("problems = %v, want one naming the missing ref", problems)
+	}
+}
+
+// An ordinary worktree: tab passes validation cleanly -- the point of the
+// other two tests is that only the actual conflicts are rejected.
+func TestValidateAcceptsAnOrdinaryWorktreeTab(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "main"}, Panes: []Pane{{}}},
+	}}
+	if problems := s.Validate(); len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+}
+
+// Describe prints the deterministic path (already in Cwd, like any other
+// step) plus the ref, and says plainly that nothing has been created --
+// consistent with WorktreePlaceholder's tone for the whole-Space case, which
+// also names what has not happened rather than fabricating anything.
+func TestDescribeShowsTheWorktreeRefAndPathWithoutCreatingAnything(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "main"}, Panes: []Pane{{}}},
+	}}
+	plan, err := s.ResolveData("/repo", worktreeData(nil))
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+
+	out := strings.Join(plan.Describe(), "\n")
+	for _, want := range []string{"/repo/.herdr-worktrees/main", "main", "not created yet"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Describe() missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// detach: false shows up in the preview as a branch checkout, not the
+// detached default, so someone reading --dry-run output can tell which one
+// they are about to get.
+func TestDescribeDistinguishesDetachedFromBranchCheckout(t *testing.T) {
+	no := false
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "baseline", Worktree: &WorktreeSpec{Ref: "fix-thing", Detach: &no}, Panes: []Pane{{}}},
+	}}
+	plan, err := s.ResolveData("/repo", worktreeData(nil))
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+
+	out := strings.Join(plan.Describe(), "\n")
+	if !strings.Contains(out, "branch checkout") {
+		t.Errorf("Describe() does not say detach:false means a branch checkout:\n%s", out)
+	}
+	if strings.Contains(out, "ref fix-thing, detached") {
+		t.Errorf("Describe() called a detach:false tab detached:\n%s", out)
+	}
+}
+
+// A tab with no worktree: at all resolves exactly as it always has -- a
+// setup with no worktree: anywhere must not pay for one at all, and this
+// pins that Data.WorktreePath need not even be set for such a plan.
+func TestResolveDataWithNoWorktreeNeedsNoWorktreePathFunc(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "plain", Panes: []Pane{{}}},
+	}}
+	plan, err := s.ResolveData("/repo", Data{Vars: nil})
+	if err != nil {
+		t.Fatalf("ResolveData: %v", err)
+	}
+	if plan.Steps[0].Worktree != nil {
+		t.Errorf("Worktree = %+v, want nil for a plain tab", plan.Steps[0].Worktree)
+	}
+	if plan.Steps[0].Cwd != "/repo" {
+		t.Errorf("Cwd = %q, want the ordinary inherited cwd", plan.Steps[0].Cwd)
+	}
+}

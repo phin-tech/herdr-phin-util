@@ -42,6 +42,38 @@ type Step struct {
 	Focus    bool
 	WaitFor  *WaitFor
 	FirstTab bool
+	// Worktree is set only on the step that opens this tab (FirstTab or
+	// NewTab), never on a split -- a tab's worktree is created once, before
+	// the tab exists, not once per pane in it. nil is the ordinary case: no
+	// worktree: on the tab.
+	//
+	// Cwd, above, is deliberately NOT left unresolved for this step the way
+	// "create it, then fill this in" might suggest. It already holds the
+	// worktree's real, deterministic path (see ResolveWorktreePath in
+	// internal/config and applyWorktrees in internal/open/setup.go) --
+	// computable from the repo root and the rendered ref alone, without
+	// creating anything or touching disk. That is what keeps this struct's
+	// own invariant intact: "no template left to render... resolving ahead of
+	// execution is what makes --dry-run honest" (see the doc comment above).
+	// If Cwd here meant "ask Herdr where this ends up" instead, Describe would
+	// have to fabricate a placeholder or shell out to git during a preview,
+	// and every reader of Cwd -- buildPanes, fillPanes, Describe itself --
+	// would have to know to treat this one step's Cwd differently from every
+	// other step's. Nothing does; Cwd means what it always means, and
+	// Worktree carries only what buildPanes cannot get from Cwd: the ref and
+	// detach flag the pre-pass needs to actually create the thing at that
+	// path.
+	Worktree *StepWorktree
+}
+
+// StepWorktree is a tab-opening step's rendered `worktree:` -- the ref as a
+// concrete string, no template left in it, and whether to leave HEAD detached
+// or check ref out as a branch. See the long comment on Step.Worktree for why
+// this does not also carry the path: Step.Cwd already does, and carrying it
+// twice would leave two fields that could disagree.
+type StepWorktree struct {
+	Ref    string
+	Detach bool
 }
 
 // Plan is a setup resolved against one target.
@@ -69,6 +101,21 @@ type Plan struct {
 type Data struct {
 	Vars  map[string]string
 	Lists map[string][]map[string]string
+	// WorktreePath resolves where a tab's `worktree:` ref should be checked
+	// out, given the rendered ref. It is a function rather than a repo root
+	// plus a config template because this package -- deliberately, see its
+	// own doc comment -- talks to neither git nor a config file: the caller
+	// (internal/open) already has both a *config.Settings and the repo root a
+	// worktree is cut from, and closes over them once before calling
+	// ResolveData. That keeps this package's only new dependency for #12 a
+	// single function value, not a new import.
+	//
+	// nil here is the ordinary case -- PreviewSetup and applySetup both set
+	// it, but Resolve (the pre-for_each signature nothing here-facing calls)
+	// does not, and any Setup with no worktree: tab never calls it either.
+	// A worktree: tab resolved with this nil is an error (see ResolveData),
+	// since there would be nowhere to build one.
+	WorktreePath func(ref string) string
 }
 
 // Resolve renders a setup against the target data and the Space's directory.
@@ -131,6 +178,39 @@ func (s Setup) ResolveData(baseCwd string, data Data) (Plan, error) {
 			if err != nil {
 				return Plan{}, fmt.Errorf("tab %d cwd: %w", ti+1, err)
 			}
+
+			// A worktree: tab does not live under the Space's own directory
+			// tree -- it is its own checkout, somewhere the naming scheme in
+			// internal/config puts it -- so its cwd is the worktree's path
+			// outright, not tabCwd joined against anything. Validate already
+			// refuses cwd: and worktree: together, so there is no ordering
+			// question about which one wins here.
+			//
+			// Ref renders in this same per-iteration pass as tabCwd, against
+			// the same vars a for_each element would supply -- deliberately,
+			// so stage two's for_each interaction costs nothing extra to
+			// wire up here when it lands.
+			var stepWorktree *StepWorktree
+			if tab.Worktree != nil {
+				ref, err := Render(tab.Worktree.Ref, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d worktree ref: %w", ti+1, err)
+				}
+				ref = strings.TrimSpace(ref)
+				if ref == "" {
+					return Plan{}, fmt.Errorf("tab %d worktree: ref rendered empty", ti+1)
+				}
+				if data.WorktreePath == nil {
+					return Plan{}, fmt.Errorf("tab %d worktree: no repository to build it in", ti+1)
+				}
+				detach := true
+				if tab.Worktree.Detach != nil {
+					detach = *tab.Worktree.Detach
+				}
+				tabCwd = data.WorktreePath(ref)
+				stepWorktree = &StepWorktree{Ref: ref, Detach: detach}
+			}
+
 			tabEnv, err := renderEnv(tab.Env, vars)
 			if err != nil {
 				return Plan{}, fmt.Errorf("tab %d env: %w", ti+1, err)
@@ -169,6 +249,14 @@ func (s Setup) ResolveData(baseCwd string, data Data) (Plan, error) {
 					split = DefaultSplit
 				}
 
+				// Worktree rides only on the pane that opens the tab: a
+				// worktree is created once, before the tab exists, never once
+				// per split in it.
+				var paneWorktree *StepWorktree
+				if pi == 0 {
+					paneWorktree = stepWorktree
+				}
+
 				step := Step{
 					Tab:      emitted,
 					TabName:  tabName,
@@ -187,6 +275,7 @@ func (s Setup) ResolveData(baseCwd string, data Data) (Plan, error) {
 					Command:  strings.TrimSpace(command),
 					Focus:    pane.Focus,
 					WaitFor:  normaliseWait(pane.WaitFor),
+					Worktree: paneWorktree,
 				}
 				if pane.Focus && focus < 0 {
 					focus = len(plan.Steps)
@@ -528,6 +617,20 @@ func (p Plan) Describe() []string {
 
 		if s.Cwd != "" {
 			out = append(out, "    cwd     "+s.Cwd)
+		}
+		if s.Worktree != nil {
+			// The path above is real -- deterministic, computed from the
+			// repo root and the rendered ref alone -- so it is printed
+			// unqualified, the same as any other step's cwd. What a preview
+			// cannot claim is that it exists: nothing here has touched disk,
+			// the same promise WorktreePlaceholder makes for a whole-Space
+			// worktree whose path is not even knowable yet. This one differs
+			// only in that the path *is* knowable; it still is not there.
+			mode := "detached"
+			if !s.Worktree.Detach {
+				mode = "branch checkout"
+			}
+			out = append(out, fmt.Sprintf("    worktree ref %s, %s -- not created yet", s.Worktree.Ref, mode))
 		}
 		for _, k := range sortedKeys(s.Env) {
 			out = append(out, fmt.Sprintf("    env     %s=%s", k, s.Env[k]))

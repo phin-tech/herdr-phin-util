@@ -68,6 +68,15 @@ func (f *fakeSession) SendText(paneID, text string) error {
 
 func (f *fakeSession) FetchBranch(repoPath, branch string) error { return nil }
 
+// The rest of open.WorktreeGit, unused by anything under test in this
+// package -- these popup tests never build a setup's tab-level worktree --
+// but Deps.Git's declared type is the whole interface now.
+func (f *fakeSession) FetchRef(repoPath, ref string) error                { return nil }
+func (f *fakeSession) WorktreeAdd(repoPath, path, ref string) error       { return nil }
+func (f *fakeSession) WorktreeAddBranch(repoPath, path, ref string) error { return nil }
+func (f *fakeSession) HeadCommit(path string) (string, error)             { return "", nil }
+func (f *fakeSession) ResolveRef(repoPath, ref string) (string, error)    { return "", nil }
+
 func (f *fakeSession) LookupIssue(owner, repo string, number int) (gh.IssueInfo, error) {
 	return gh.IssueInfo{}, nil
 }

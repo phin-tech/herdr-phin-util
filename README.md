@@ -457,13 +457,45 @@ Only the names a setup's own `for_each` tabs mention are ever resolved — a
 setup with no `for_each` costs nothing extra, and `gh pr list` runs at most
 once per run even if several tabs repeat over `layers`.
 
-There is deliberately no per-layer `worktree` field yet: every layer shares
-the Space's one `cwd`, the same as any non-repeated tab reviewing a single PR.
-Pinning a repeated tab to its own ref is a separate, larger feature
-(`worktree:` on a tab, issue #12) tracked on its own issue — until it lands, `for_each`
-over `layers` is usable for anything that does not need a distinct checkout
-per layer (reading a diff, prompting an agent with the PR's own metadata),
-but does not by itself remove a script that builds one worktree per layer.
+There is deliberately no *per-layer* `worktree` yet: `worktree:` on a tab
+(below) works on an ordinary tab, one ref to one worktree, but a `for_each`
+tab whose `ref` varies per element still needs two validation rules this
+version does not enforce (a constant `ref`, or `detach: false`, inside a
+`for_each` tab are both always mistakes) and is not built here. Until then,
+`for_each` over `layers` is usable for anything that does not need a distinct
+checkout per layer (reading a diff, prompting an agent with the PR's own
+metadata), but does not by itself remove a script that builds one worktree
+per layer.
+
+**`worktree:` pins an ordinary tab to a ref of its own:**
+
+```yaml
+tabs:
+  - name: baseline
+    worktree: { ref: "main" }        # detached by default
+    panes: [{ command: "npm test" }]
+  - name: work                       # no worktree: -- the Space's own cwd
+    panes: [{ agent: claude }]
+```
+
+Useful with no `for_each` in sight — comparing two versions side by side,
+pinning a test runner to a known-good commit, reviewing a tag while `HEAD`
+moves. `ref` renders as a template, same data as `cwd`. Detached is the
+default (a branch can't be checked out in two worktrees at once and moves
+under you mid-review); `detach: false` opts into a branch checkout for the
+single-tab case where the point is to commit. `cwd:` and `worktree:` together
+is rejected — two answers to the same question — and so is a blank `ref`.
+
+Where it lives: the same `[worktrees].path` template now also takes a `{ref}`
+placeholder, sanitized like `{branch}`; unconfigured, it defaults to
+`{repo_root}/.herdr-worktrees/{ref}` — keyed on repo root and ref alone, so a
+re-run reuses rather than accumulates. If something is already at that path:
+missing → created; checked out at the right commit → reused silently; checked
+out at a *different* commit → that tab is reported failed and skipped, never
+force-removed. The error names the exact fix: `git worktree remove --force
+<path>`. `--dry-run` prints the same deterministic path and the ref, and
+creates nothing — it doesn't need to touch disk to know what the path will
+be.
 
 Each element's fields render flat, as `<as>_<key>` — `{{.layer_pr}}`, never
 `{{.layer.pr}}` — because the prompt/cwd/env template dialect is one plain

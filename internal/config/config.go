@@ -449,6 +449,47 @@ func (s *Settings) ResolveWorktreePath(t target.Target, repoRoot, branch string)
 	return expandTemplate(s.WorktreePath, t, extra), true
 }
 
+// defaultTabWorktreeTemplate is used when [worktrees].path is unset. It is
+// keyed on the repo root and the ref alone -- deliberately not a setup name,
+// a run id or a timestamp -- because #12 asked for a re-run to reuse rather
+// than accumulate: "I would rather it accumulate predictably than get
+// cleverly cleaned up and occasionally delete something someone was using."
+// A run id would defeat that on its own; it would make every run of the same
+// setup against the same ref land in a fresh directory.
+const defaultTabWorktreeTemplate = "{repo_root}/.herdr-worktrees/{ref}"
+
+// ResolveTabWorktreePath expands where a tab's own `worktree:` ref should be
+// checked out (see internal/setup's WorktreeSpec). It extends the same
+// [worktrees].path notion ResolveWorktreePath reads, adding a {ref}
+// placeholder rather than inventing a second one -- there is exactly one
+// configured idea of "where this plugin's worktrees live" and a tab's own
+// worktree is a use of it, not a different thing.
+//
+// Unlike ResolveWorktreePath, this never answers "let Herdr choose": there is
+// no Herdr call that creates a tab's worktree for it (see the package
+// comments on gitcmd and internal/open/setup.go for why), so something here
+// has to name a path before the tab can be opened at all. An unset
+// [worktrees].path therefore falls back to defaultTabWorktreeTemplate rather
+// than an ok-false "nothing configured" the way ResolveWorktreePath answers.
+//
+// {branch} is also filled in, from the same sanitized ref, so a template
+// written before {ref} existed (using {branch} for a whole-Space worktree)
+// still expands rather than leaving a literal "{branch}" in the path when
+// reused here.
+func (s *Settings) ResolveTabWorktreePath(t target.Target, repoRoot, ref string) string {
+	tmpl := s.WorktreePath
+	if tmpl == "" {
+		tmpl = defaultTabWorktreeTemplate
+	}
+	sanitized := target.Sanitize(ref)
+	extra := map[string]string{
+		"{repo_root}": repoRoot,
+		"{ref}":       sanitized,
+		"{branch}":    sanitized,
+	}
+	return expandTemplate(tmpl, t, extra)
+}
+
 // AgentKind is the configured agent kind, as a method so a package that only
 // needs to name it does not have to import the whole Settings shape.
 func (s *Settings) AgentKind() string { return s.Agent.Kind }

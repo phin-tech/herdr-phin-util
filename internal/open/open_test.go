@@ -183,12 +183,68 @@ type fakeFetcher struct {
 	calls  int
 	branch string
 	path   string
+
+	// WorktreeGit's extra methods, used by applySetup's pre-pass
+	// (applyWorktrees/ensureWorktree) -- see setup_test.go for the tests that
+	// exercise these.
+	fetchRefErr   error
+	fetchRefCalls []string
+
+	worktreeAddCalls       []string
+	worktreeAddErr         error
+	worktreeAddBranchCalls []string
+	worktreeAddBranchErr   error
+
+	// resolveRefSHA is what ResolveRef answers for any ref; empty defaults to
+	// a value derived from the ref itself ("sha-<ref>"), which is what makes
+	// the default fakeFetcher agree with itself across a fetch and a
+	// worktree add for the same ref without a test having to wire the two
+	// together by hand.
+	resolveRefSHA string
+	resolveRefErr error
+	// headCommitSHA is what HeadCommit answers for any path -- a single value
+	// rather than a map, since every test here deals with one worktree path
+	// at a time.
+	headCommitSHA string
+	headCommitErr error
 }
 
 func (f *fakeFetcher) FetchBranch(repoPath, branch string) error {
 	f.calls++
 	f.path, f.branch = repoPath, branch
 	return f.err
+}
+
+func (f *fakeFetcher) FetchRef(repoPath, ref string) error {
+	f.fetchRefCalls = append(f.fetchRefCalls, ref)
+	return f.fetchRefErr
+}
+
+func (f *fakeFetcher) ResolveRef(repoPath, ref string) (string, error) {
+	if f.resolveRefErr != nil {
+		return "", f.resolveRefErr
+	}
+	if f.resolveRefSHA != "" {
+		return f.resolveRefSHA, nil
+	}
+	return "sha-" + ref, nil
+}
+
+func (f *fakeFetcher) HeadCommit(path string) (string, error) {
+	if f.headCommitErr != nil {
+		return "", f.headCommitErr
+	}
+	return f.headCommitSHA, nil
+}
+
+func (f *fakeFetcher) WorktreeAdd(repoPath, path, ref string) error {
+	f.worktreeAddCalls = append(f.worktreeAddCalls, path+" "+ref)
+	return f.worktreeAddErr
+}
+
+func (f *fakeFetcher) WorktreeAddBranch(repoPath, path, ref string) error {
+	f.worktreeAddBranchCalls = append(f.worktreeAddBranchCalls, path+" "+ref)
+	return f.worktreeAddBranchErr
 }
 
 // existingRepo creates a directory so config.ResolveRepo can find it, and
