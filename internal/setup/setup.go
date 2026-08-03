@@ -13,6 +13,36 @@
 // those steps is internal/open's job. That split is what lets the interesting
 // parts -- precedence between three sources, cwd and env inheritance, what
 // applies to what -- be tested without a running session.
+//
+// # YAML is the front end, not the model
+//
+// The pipeline is: a file becomes a [Setup], [Setup.Validate] says whether it
+// is well-formed, and [Setup.ResolveData] turns it into a [Plan] of ordered
+// steps. Only the first of those four is YAML-shaped. That is deliberate, and
+// it is what a second front end -- a real language, for the setups a
+// declaration cannot express -- would slot into: it would build a [Setup] and
+// inherit validation and resolution unchanged, rather than building a [Plan]
+// and silently bypassing every rule in Validate. Two properties keep that door
+// open, and both are worth preserving on purpose:
+//
+//   - [Plan] and [Step] stay plain data. No yaml tags, no map[string]any,
+//     nothing that only makes sense for a file.
+//   - A [Setup] is constructible in memory, with no load-time side effects.
+//     Source, Origin and ScopedRepo are set only by Load and read only by the
+//     picker and by Matches; their zero values are meaningful, so a Setup that
+//     never came from a file is still a valid one.
+//
+// TestSetupIsConstructibleWithoutYAML pins the second property. One caveat on
+// the first: unknown-key rejection is not in Validate -- it is
+// yaml.Decoder.KnownFields in load.go, so it protects the YAML front end only.
+// Validate is the shared contract; strictness about a file's spelling is not.
+//
+// The reason this is written down rather than assumed is scope. for_each (see
+// [Tab.ForEach]) is one loop, and one loop is a loop. A second control-flow
+// feature -- a when:, arithmetic in a template, a loop over a loop -- would
+// make this a programming language expressed in YAML, which is a bad one. That
+// request is the signal to add a second front end instead of growing this
+// dialect further; see issue #10 for why Starlark is the candidate.
 package setup
 
 import (
@@ -119,6 +149,24 @@ type Tab struct {
 	// nothing else. It cannot be combined with Panes.
 	Command string `yaml:"command"`
 	Panes   []Pane `yaml:"panes"`
+
+	// ForEach names a list carried in a [Data] passed to ResolveData, one that
+	// this tab is rendered once per element of -- and deliberately a name,
+	// never a template expression. promptData is a flat map[string]string,
+	// and Render's missingkey=zero only means what it means today because
+	// nothing that flows through {{ }} is anything but a string; the moment
+	// a template placeholder could itself be a list, Render would need to
+	// become a second, richer dialect to cope with it. Resolving the name
+	// outside the template layer keeps Render exactly as it was and makes
+	// what for_each does readable without knowing Go's text/template rules.
+	ForEach string `yaml:"for_each"`
+	// As is the prefix each element's fields render under: {{.layer_pr}}, not
+	// {{.layer.pr}}. Nested access would need map[string]any underneath
+	// Vars, which drags missingkey=zero somewhere far less predictable for
+	// the sake of prettier YAML -- see ResolveData for how the prefix is
+	// built. Defaults to ForEach itself when left blank, since most setups
+	// have no reason to say the same word twice.
+	As string `yaml:"as"`
 }
 
 // EffectivePanes normalises the two ways of writing a tab into the one the
@@ -207,6 +255,17 @@ func (s Setup) Validate() []string {
 			add("%s has both a command and panes -- use one or the other", where)
 		}
 
+		// forEach is the trimmed name this tab repeats over, or "" for an
+		// ordinary tab -- computed once so both the shape checks below and
+		// the per-pane focus check agree on which kind of tab this is.
+		forEach := strings.TrimSpace(tab.ForEach)
+		if tab.ForEach != "" && forEach == "" {
+			add("%s: for_each has nothing after it -- name the list to repeat over, or delete the key", where)
+		}
+		if forEach == "" && strings.TrimSpace(tab.As) != "" {
+			add("%s: as %q is set without a for_each to repeat over", where, tab.As)
+		}
+
 		for j, pane := range tab.EffectivePanes() {
 			at := fmt.Sprintf("%s pane %d", where, j+1)
 
@@ -238,7 +297,20 @@ func (s Setup) Validate() []string {
 				add("%s: wait_for has no match to wait for", at)
 			}
 			if pane.Focus {
-				focused++
+				if forEach != "" {
+					// Cardinality is the one thing a for_each tab makes
+					// dynamic (see the package-level rationale), and this is
+					// where that bites: every element would render this
+					// pane with Focus set, marking N panes across N tabs,
+					// and only the last one built would quietly end up
+					// focused. That is silent enough to ship and confusing
+					// enough to debug that it is worth refusing outright
+					// rather than folding it into the plain multi-focus
+					// count below, which only ever sees one template.
+					add("%s: focus true inside a for_each tab -- every repeated instance would set it, and only the last one built would win", at)
+				} else {
+					focused++
+				}
 			}
 		}
 	}

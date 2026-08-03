@@ -58,6 +58,8 @@ func availableSetups(setups []setup.Setup) string {
 	return " (have: " + strings.Join(names, ", ") + ")"
 }
 
+const setupsUsage = "usage: herdr-phin-util setups [--repo DIR]"
+
 // runSetups lists what is defined and where it came from.
 //
 // Like "projects", it needs no Herdr session: a setup that is not being
@@ -67,6 +69,9 @@ func runSetups(args []string) int {
 	repoPath := invocationCwd()
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-h", "--help":
+			fmt.Println(setupsUsage)
+			return 0
 		case "--repo":
 			i++
 			if i >= len(args) {

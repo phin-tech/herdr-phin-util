@@ -120,6 +120,21 @@ func TestValidate(t *testing.T) {
 			Setup{Name: "x", Tabs: []Tab{{Name: "a", Panes: []Pane{{Focus: true}, {Split: "down", Focus: true}}}}},
 			"only one can be",
 		},
+		{
+			"focus inside a for_each tab",
+			Setup{Name: "x", Tabs: []Tab{{Name: "a", ForEach: "layers", Panes: []Pane{{Focus: true}}}}},
+			"focus true inside a for_each tab",
+		},
+		{
+			"as without for_each",
+			Setup{Name: "x", Tabs: []Tab{{Name: "a", As: "layer", Panes: []Pane{{}}}}},
+			`as "layer" is set without a for_each`,
+		},
+		{
+			"for_each with nothing after it",
+			Setup{Name: "x", Tabs: []Tab{{Name: "a", ForEach: "   ", Panes: []Pane{{}}}}},
+			"for_each has nothing after it",
+		},
 	}
 
 	for _, tt := range tests {
