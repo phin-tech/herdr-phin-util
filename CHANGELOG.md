@@ -6,6 +6,65 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.8.0 — 2026-08-03
+
+`for_each` gets a source ([#13]).
+
+0.7.0 shipped `for_each` with nothing that could populate the lists it reads,
+which was a known and stated gap -- every setup that used it failed with
+"this target provides no lists", by design, until something filled `Lists`
+in. This is that something: a `github_pr` target now resolves a `layers`
+list, the chain of open pull requests it belongs to, bottom of the stack
+first, so a stacked-PR review layout can finally be written and run rather
+than only validated.
+
+- `layers` comes from a single `gh pr list --state open`, reconstructed by
+  hand rather than asked of `gh` directly -- `gh stack view` answers "not
+  part of a stack" for any branch that was not created through its own
+  tracking, which is most stacks reviewed here. The walk goes both
+  directions from the target PR: down toward the trunk by `baseRefName`, up
+  by whichever open PR bases on the current one's head. Walking only one
+  direction was the original version of this bug -- a stack's bottom layer
+  bases on the trunk, so "base != trunk" alone reads a five-layer stack as
+  standalone the moment you ask about its bottom PR.
+- A pull request in no stack resolves to a one-element list, not an error --
+  most pull requests reviewed day to day are exactly this, and a setup
+  should not have to special-case it. A malformed cycle is caught by a
+  visited set rather than hung on. Two open pull requests sharing a base
+  make the walk ambiguous -- the open PRs are a tree at that point, not a
+  chain -- and rather than silently pick a branch, that is refused with an
+  error naming every path to a tip, so a person can retry against the
+  number they actually meant.
+- Resolution is lazy, driven by a new `Setup.ForEachNames()`: only the list
+  names a chosen setup's own `for_each` tabs mention are ever resolved, so a
+  setup that never uses `for_each` -- most of them -- triggers no `gh` call
+  at all, and a setup naming a list nobody produces still gets the existing
+  "provides no lists" error. The same check is built to take a second list
+  source later behind it, one more clause alongside this one.
+- Per layer, all strings: `layer` (1-based, alongside the `layer_index`
+  every `for_each` element already gets for free), `pr`, `title`, `url`,
+  `head_branch`, `head_sha`, `base_branch`, and `base_pr` -- the PR number
+  immediately below this layer, empty for the bottom one, since it bases on
+  the trunk rather than on another open PR.
+- Deliberately **not** a new `github_stack` target kind, which is what #7
+  originally sketched (`applies_to: [github_stack]`). A target kind is
+  chosen by parsing pasted input, and there is no shape that means "a
+  stack" -- you paste a pull request URL, and that parses as `github_pr`
+  regardless of how many other pull requests are stacked on it. So any
+  `github_pr` target resolves its own `layers` instead, and a setup asks
+  for the chain with `applies_to: [github_pr]` and `for_each: layers` --
+  which means #7's own YAML does not run verbatim; `applies_to` has to
+  name `github_pr`, not `github_stack`. A `github_stack` kind, mainly
+  useful so the picker could show a stack as one row, is tracked
+  separately as [#14] and not built here.
+- Deliberately **no** per-layer `worktree` field either. Every layer still
+  shares the Space's one `cwd`, same as any non-repeated tab reviewing a
+  single PR -- giving each layer its own checkout needs a tab that can pin
+  itself to a ref, which is a separate and larger feature tracked as [#12].
+  This alone makes `for_each` usable; it does not by itself replace a
+  bootstrap script that builds one worktree per layer, only shrinks what
+  that script would still need to do.
+
 ## 0.7.0 — 2026-08-03
 
 A setup can repeat a tab, a `command:` pane is told where it is, and `--help`
@@ -249,3 +308,6 @@ Setups no longer half-build a Space in silence ([#3]).
 [#4]: https://github.com/phin-tech/herdr-phin-util/issues/4
 [#5]: https://github.com/phin-tech/herdr-phin-util/issues/5
 [#6]: https://github.com/phin-tech/herdr-phin-util/issues/6
+[#12]: https://github.com/phin-tech/herdr-phin-util/issues/12
+[#13]: https://github.com/phin-tech/herdr-phin-util/issues/13
+[#14]: https://github.com/phin-tech/herdr-phin-util/issues/14

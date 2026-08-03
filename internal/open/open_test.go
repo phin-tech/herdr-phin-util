@@ -148,6 +148,10 @@ type fakePRLookup struct {
 	issue      gh.IssueInfo
 	issueErr   error
 	issueCalls int
+
+	stack      []gh.StackPR
+	stackErr   error
+	stackCalls int
 }
 
 func (f *fakePRLookup) LookupIssue(owner, repo string, number int) (gh.IssueInfo, error) {
@@ -164,6 +168,14 @@ func (f *fakePRLookup) LookupPR(owner, repo string, number int) (gh.PRInfo, erro
 		return gh.PRInfo{}, f.err
 	}
 	return f.info, nil
+}
+
+func (f *fakePRLookup) Stack(owner, repo string, number int) ([]gh.StackPR, error) {
+	f.stackCalls++
+	if f.stackErr != nil {
+		return nil, f.stackErr
+	}
+	return f.stack, nil
 }
 
 type fakeFetcher struct {

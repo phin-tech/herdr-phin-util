@@ -427,27 +427,51 @@ command pane will get (ids are not knowable before anything is built).
 setup file), so a chained command has to re-export what it needs itself.
 
 **Repeating a tab:** `for_each: layers` builds one tab per element of a named
-list a target resolved (there is no list-producing target kind yet — see the
-tracking issue), rather than the tab appearing once:
+list a target resolved, rather than the tab appearing once. Today `layers` is
+the only such list, and only a `github_pr` target produces it: the chain of
+open pull requests it belongs to, bottom of the stack first, resolved via
+`gh pr list` and reconstructed by walking `baseRefName`/`headRefName` — never
+a new `applies_to` target kind (see below for why).
 
 ```yaml
+applies_to: [github_pr]
 tabs:
   - for_each: layers          # a name, not a template expression
     as: layer                 # defaults to for_each's own name
     name: "L{{.layer_layer}} #{{.layer_pr}}"
-    cwd: "{{.layer_worktree}}"
     panes:
       - label: "l{{.layer_layer}}-claude"
         agent: claude
         submit: true
-        prompt: "Review PR #{{.layer_pr}} at {{.layer_head_sha}}"
+        prompt: "Review PR #{{.layer_pr}} at {{.layer_head_sha}} (base #{{.layer_base_pr}})"
 ```
+
+Each layer's fields, all strings: `layer` (1-based), `pr`, `title`, `url`,
+`head_branch`, `head_sha`, `base_branch`, `base_pr` (the PR number immediately
+below this layer in the chain, empty for the bottom layer — it bases on the
+trunk, not on another open PR). A standalone pull request — based directly on
+the trunk, with nothing built on top of it — resolves to a one-element list
+rather than an error, so a setup does not need to special-case it.
+
+Only the names a setup's own `for_each` tabs mention are ever resolved — a
+setup with no `for_each` costs nothing extra, and `gh pr list` runs at most
+once per run even if several tabs repeat over `layers`.
+
+There is deliberately no per-layer `worktree` field yet: every layer shares
+the Space's one `cwd`, the same as any non-repeated tab reviewing a single PR.
+Pinning a repeated tab to its own ref is a separate, larger feature
+(`worktree:` on a tab, issue #12) tracked on its own issue — until it lands, `for_each`
+over `layers` is usable for anything that does not need a distinct checkout
+per layer (reading a diff, prompting an agent with the PR's own metadata),
+but does not by itself remove a script that builds one worktree per layer.
 
 Each element's fields render flat, as `<as>_<key>` — `{{.layer_pr}}`, never
 `{{.layer.pr}}` — because the prompt/cwd/env template dialect is one plain
 `map[string]string` everywhere in this plugin, and nesting would need a richer
-value type just for this one feature. `<as>_index` is also set, 1-based. An
-element's own field wins if it happens to be named `index`.
+value type just for this one feature. `<as>_index` is also set, 1-based,
+alongside the explicit `layer` field above — both exist on purpose, rather
+than making a setup reach for one and hope it means the other. An element's
+own field wins if it happens to be named `index`.
 
 An empty list is not an error and builds zero tabs; a `for_each` naming a list
 the target never provided is — before any pane exists, not partway through
@@ -457,6 +481,16 @@ built would win.
 
 This is the plugin's one loop, deliberately: no `when:`, no conditionals, no
 nested `for_each`. Anything that needs actual logic is a `command:` pane.
+
+**Why `applies_to: [github_pr]` rather than a `github_stack` kind:** a target
+kind is chosen by parsing whatever was pasted, and there is no pasted-input
+shape that means "a stack" — you paste a pull request URL, and that parses as
+`github_pr` regardless of how many other pull requests are stacked on it. So
+rather than invent a kind nothing can name, any `github_pr` target can
+reconstruct the whole chain it belongs to, and a setup asks for that chain
+with `for_each: layers` the same way it would ask for anything else. A
+`github_stack` kind — mainly useful so the picker could show a stack as one
+row — is a separate, unbuilt feature tracked as issue #14.
 
 Narrow which targets a setup offers itself for with `applies_to`, `repos`
 (globs over `owner/repo`), and `branches` (globs). Valid `applies_to` kinds:

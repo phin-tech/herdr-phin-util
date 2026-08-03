@@ -200,3 +200,58 @@ func TestValidateRejectsModelAndArgsWithoutAnAgent(t *testing.T) {
 		t.Errorf("problems = %q, want both named", problems)
 	}
 }
+
+func TestForEachNamesNone(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a"}, {Name: "b"}}}
+	if got := s.ForEachNames(); len(got) != 0 {
+		t.Errorf("ForEachNames() = %v, want none", got)
+	}
+}
+
+func TestForEachNamesOne(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{{Name: "a"}, {Name: "b", ForEach: "layers"}}}
+	got := s.ForEachNames()
+	if len(got) != 1 || got[0] != "layers" {
+		t.Errorf("ForEachNames() = %v, want [layers]", got)
+	}
+}
+
+func TestForEachNamesSeveralInFileOrder(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "a", ForEach: "packages"},
+		{Name: "b", ForEach: "layers"},
+	}}
+	got := s.ForEachNames()
+	want := []string{"packages", "layers"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("ForEachNames() = %v, want %v (file order)", got, want)
+	}
+}
+
+// Two tabs naming the same list must not produce it twice: a caller
+// resolving each name once would otherwise do the same gh call twice for
+// nothing.
+func TestForEachNamesDeduplicates(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "a", ForEach: "layers"},
+		{Name: "b", ForEach: "layers"},
+	}}
+	got := s.ForEachNames()
+	if len(got) != 1 || got[0] != "layers" {
+		t.Errorf("ForEachNames() = %v, want [layers] once", got)
+	}
+}
+
+// A for_each that is only whitespace is the same as no for_each at all --
+// Validate already rejects it as "nothing after it", but ForEachNames must
+// not report it as a name to resolve either.
+func TestForEachNamesSkipsWhitespaceOnly(t *testing.T) {
+	s := Setup{Name: "x", Tabs: []Tab{
+		{Name: "a", ForEach: "   "},
+		{Name: "b", ForEach: "layers"},
+	}}
+	got := s.ForEachNames()
+	if len(got) != 1 || got[0] != "layers" {
+		t.Errorf("ForEachNames() = %v, want [layers] only", got)
+	}
+}

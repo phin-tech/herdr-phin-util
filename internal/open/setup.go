@@ -85,14 +85,22 @@ func PreviewSetup(deps Deps, cfg *config.Settings, input string, def setup.Setup
 		data["Path"] = cwd
 	}
 
-	// Lists has no source yet: the target kind that would populate it -- a
-	// github_stack that walks baseRefName across a chain of pull requests --
-	// is #7's own follow-up, deliberately not built here. Until that exists,
-	// every target resolves zero lists, and a setup's for_each tab fails with
-	// the "provides no lists" error tabIterations produces -- which is
-	// exactly what a preview of an unsupported for_each should show rather
-	// than silently rendering zero tabs.
-	plan, err := def.ResolveData(cwd, setup.Data{Vars: data})
+	// Lists is resolved only for the names def actually asks for
+	// (def.ForEachNames()), and only a github_pr target produces any --
+	// "layers", the chain of open pull requests tgt belongs to (see
+	// internal/open/stack.go). Deliberately not a new target kind: #7
+	// sketched applies_to: [github_stack], but there is no pasted-input
+	// shape that parses as one, so #13 built this instead as a github_pr
+	// resolving a list (github_stack itself is #14, unbuilt, tracked
+	// separately). A setup naming for_each: layers against any other target
+	// kind, or a setup naming a list nobody produces at all, still fails
+	// with tabIterations' "provides no lists" error below -- exactly what a
+	// preview of an unsupported for_each should show.
+	lists, err := resolveLists(deps.PRs, tgt, def.ForEachNames())
+	if err != nil {
+		return setup.Plan{}, tgt, err
+	}
+	plan, err := def.ResolveData(cwd, setup.Data{Vars: data, Lists: lists})
 	return plan, tgt, err
 }
 
@@ -124,14 +132,23 @@ type Layout interface {
 // failed, which is exactly the thing that was hardest to diagnose about a
 // half-built Space. Only a plan that cannot be resolved at all is an error,
 // since then nothing has been built to report on.
-func applySetup(deps Deps, cfg *config.Settings, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
+func applySetup(deps Deps, cfg *config.Settings, tgt target.Target, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
 	l := deps.Layout
 
-	// Same "no source yet" gap as PreviewSetup: Lists is nil until a target
-	// kind exists to fill it, which is where that target's resolved chain of
-	// per-element vars would be built and handed to ResolveData instead of
-	// the zero value below.
-	plan, err := def.ResolveData(cwd, setup.Data{Vars: data})
+	// Same source PreviewSetup uses (see its own comment): resolved only for
+	// the list names def actually names in a for_each. If gh fails here,
+	// that is an error and nothing gets built -- but by the time
+	// applySetup runs, the Space and its worktree already exist (runAgentStep
+	// only calls this after both), so a failure here does not leave nothing
+	// behind the way a failure earlier in the run would. That is the honest
+	// answer to "what state does a failed resolve leave", not something this
+	// change reorders to fix -- every other resolve failure in this function
+	// already has the same property.
+	lists, err := resolveLists(deps.PRs, tgt, def.ForEachNames())
+	if err != nil {
+		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
+	}
+	plan, err := def.ResolveData(cwd, setup.Data{Vars: data, Lists: lists})
 	if err != nil {
 		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
 	}

@@ -177,33 +177,68 @@ by the time you have read the brief.
 
 ### for_each: repeating a tab
 
-A tab can build itself once per element of a **named list** instead of once:
+A tab can build itself once per element of a **named list** instead of once.
+Today `layers` is the only list a target resolves, and only a `github_pr`
+target resolves it — the chain of open pull requests it belongs to, bottom of
+the stack first:
 
 ```yaml
+applies_to: [github_pr]
 tabs:
   - for_each: layers          # a name the target resolved, not a template
     as: layer                 # defaults to for_each's own name if omitted
     name: "L{{.layer_layer}} #{{.layer_pr}}"
-    cwd: "{{.layer_worktree}}"
     panes:
       - label: "l{{.layer_layer}}-claude"
         agent: claude
         submit: true
-        prompt: "Review PR #{{.layer_pr}} at {{.layer_head_sha}}"
+        prompt: "Review PR #{{.layer_pr}} at {{.layer_head_sha}} (base #{{.layer_base_pr}})"
 ```
 
-`for_each` names a list, it is never itself a template expression — there is
-no target kind yet that produces one (tracked separately), so today every
-`for_each` fails at run time with an error naming the lists that were
-available, which is `--dry-run`'s way of saying "this setup needs a target
-this plugin cannot yet resolve."
+`for_each` names a list, it is never itself a template expression. A setup
+naming a list no target has ever produced still fails at run time with an
+error naming the lists that were available (or that none were), which is
+`--dry-run`'s way of saying "this setup needs a source this plugin cannot yet
+resolve."
+
+**Where `layers` comes from, and why not a new target kind.** A target kind is
+chosen by parsing pasted input, and there is no pasted shape that means "a
+stack" — you paste a pull request URL, and that parses as `github_pr` no
+matter how many other pull requests are stacked on it. So rather than add an
+`applies_to: [github_stack]` kind nobody can name, any `github_pr` target
+resolves its own `layers`: `gh pr list` fetched once, then walked by
+`baseRefName`/`headRefName` to reconstruct the chain (bottom-first — the layer
+based on the trunk is `layer: "1"`). A standalone pull request, based directly
+on the trunk with nothing built on top, resolves to a **one-element** list,
+not an error, so a setup does not need to special-case it. Only the list
+names a setup's own `for_each` tabs actually mention are ever resolved, so a
+setup with no `for_each` pays nothing extra, and even several tabs repeating
+over `layers` cost exactly one `gh pr list` call. (A `github_stack` target
+kind, mainly useful so the picker could show a stack as one row, is separate
+and unbuilt, tracked as issue #14.)
+
+Each layer's fields, all strings: `layer` (1-based), `pr`, `title`, `url`,
+`head_branch`, `head_sha`, `base_branch`, `base_pr` (the PR number immediately
+below this layer, empty for the bottom layer — it bases on the trunk, not on
+another open PR).
+
+**There is deliberately no per-layer `worktree` field yet.** Every layer
+shares the Space's one `cwd`, exactly like any non-repeated tab reviewing a
+single PR. Giving each layer its own checkout needs a tab that can pin itself
+to a ref, which is a separate, larger feature (`worktree:` on a tab) tracked
+on its own issue (#12) and not built here. Until it lands, `for_each: layers` is
+usable for anything that reads a diff or prompts an agent with a layer's own
+metadata, but it does not by itself replace a script that builds one worktree
+per layer.
 
 Each element's own fields render **flat**, prefixed with `as`: `{{.layer_pr}}`,
 never `{{.layer.pr}}`. That is deliberate, not an oversight — the same plain
 `map[string]string` backs every template in this file, and nesting would need
 a second, richer value type just for this one feature. `<as>_index` is also
-set, 1-based (`{{.layer_index}}`); an element field actually named `index`
-wins over it, since the element's own data should never be shadowed by
+set, 1-based (`{{.layer_index}}`), alongside the explicit `layer` field
+above — both exist on purpose, rather than making a setup reach for one and
+hope it means the other. An element field actually named `index` wins over
+the bookkeeping one, since the element's own data should never be shadowed by
 bookkeeping this feature added.
 
 An empty list is not an error — it builds **zero** tabs for that entry and
