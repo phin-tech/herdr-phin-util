@@ -35,12 +35,16 @@ type Step struct {
 	// agent.start: the model flag, if a model was named, followed by whatever
 	// args the pane spelled out. Resolving them into one list here is what
 	// keeps execution from having to know that model is sugar.
-	Args     []string
-	Prompt   string
-	Submit   bool
-	Command  string
-	Focus    bool
-	WaitFor  *WaitFor
+	Args    []string
+	Prompt  string
+	Submit  bool
+	Command string
+	Focus   bool
+	WaitFor *WaitFor
+	// OnLaunch is the pane's on_launch:, timeouts filled in from
+	// DefaultOnLaunchTimeoutMs where the file left one out -- see
+	// normaliseOnLaunch, which mirrors normaliseWait below for WaitFor.
+	OnLaunch []OnLaunchStep
 	FirstTab bool
 	// Worktree is set only on the step that opens this tab (FirstTab or
 	// NewTab), never on a split -- a tab's worktree is created once, before
@@ -275,6 +279,7 @@ func (s Setup) ResolveData(baseCwd string, data Data) (Plan, error) {
 					Command:  strings.TrimSpace(command),
 					Focus:    pane.Focus,
 					WaitFor:  normaliseWait(pane.WaitFor),
+					OnLaunch: normaliseOnLaunch(pane.OnLaunch),
 					Worktree: paneWorktree,
 				}
 				if pane.Focus && focus < 0 {
@@ -432,6 +437,25 @@ func normaliseWait(w *WaitFor) *WaitFor {
 		out.TimeoutMs = DefaultWaitTimeoutMs
 	}
 	return &out
+}
+
+// normaliseOnLaunch fills in the default per-entry timeout, the same way
+// normaliseWait does for WaitFor -- so runOnLaunch (internal/open/setup.go)
+// never has to know DefaultOnLaunchTimeoutMs exists. nil in, nil out: most
+// panes have no on_launch: at all, and a nil slice is what lets that stay
+// free of any of this.
+func normaliseOnLaunch(steps []OnLaunchStep) []OnLaunchStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]OnLaunchStep, len(steps))
+	for i, s := range steps {
+		out[i] = s
+		if out[i].TimeoutMs <= 0 {
+			out[i].TimeoutMs = DefaultOnLaunchTimeoutMs
+		}
+	}
+	return out
 }
 
 // joinCwd resolves a possibly-relative directory against the level above it.
@@ -656,6 +680,13 @@ func (p Plan) Describe() []string {
 				quoted = append(quoted, fmt.Sprintf("%q", a))
 			}
 			out = append(out, "    args    "+strings.Join(quoted, " "))
+		}
+		// Printed here, before the prompt, because that is the order
+		// execution runs them in: on_launch answers a startup modal before
+		// anything is typed. A preview that hid these would misrepresent
+		// what the run actually does with a pane that has them.
+		for _, ol := range s.OnLaunch {
+			out = append(out, fmt.Sprintf("    on_launch if %q -> keys %s (%dms)", ol.Match, strings.Join(ol.Keys, " "), ol.TimeoutMs))
 		}
 		if s.Prompt != "" {
 			verb := "type"

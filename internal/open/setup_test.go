@@ -300,6 +300,267 @@ func TestApplySetupDoesNotPromptACodexStuckOnItsStartupScreen(t *testing.T) {
 	}
 }
 
+// #18: a positive marker rendering is not proof the pane is promptable -- a
+// trust dialog can render whatever readyMarkers gates on too, in scrollback
+// or otherwise. blockedMarkers is the check that catches it: a pane showing
+// known modal text must fail visibly rather than get its prompt typed into
+// the dialog.
+func TestApplySetupFailsOnACodexTrustPrompt(t *testing.T) {
+	s := &fakeSession{readPaneText: "Do you trust the contents of this directory?\n\n1. Yes, continue\n2. No, quit"}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Label: "codex-reviewer", Agent: "codex", Prompt: "review this", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if l.promptCalls != 0 || len(s.sendTextCalls) != 0 {
+		t.Errorf("the prompt was sent into the trust dialog: agent.prompt calls=%d sendText=%+v", l.promptCalls, s.sendTextCalls)
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "Do you trust") {
+		t.Errorf("problems = %v, want the on-screen modal text named", problems)
+	}
+	if !strings.Contains(l.transcript(), "failed: codex-reviewer") {
+		t.Errorf("the pane was not marked failed:\n%s", l.transcript())
+	}
+}
+
+// The same modal is reachable with no setup at all: `open <pr-url>` cuts a
+// worktree the agent has never seen, which is the whole trigger. That path
+// has no on_launch to answer it -- that is a pane field, and there is no file
+// here -- so the most it can do is refuse to type into the dialog. Refusing
+// is still the difference between a visible failure and a lost prompt, and
+// leaving the single-agent path without the check would have made the fix
+// depend on whether you happened to use --setup.
+func TestWaitAgentDrawnRefusesAModalOnTheSingleAgentPath(t *testing.T) {
+	s := &fakeSession{readPaneText: "Do you trust the contents of this directory?\n\n1. Yes, continue"}
+
+	err := waitAgentDrawn(s, "p1", "codex")
+	if err == nil {
+		t.Fatal("want an error when a modal is on screen, so nothing is typed into it")
+	}
+	if !strings.Contains(err.Error(), "Do you trust") {
+		t.Errorf("error = %q, want the on-screen modal text named", err)
+	}
+}
+
+// A kind with no positive marker still gets the blocked check -- the lookup
+// that used to return early sat in front of it, so this pins the ordering.
+func TestWaitAgentDrawnChecksModalsForAKindWithNoReadyMarker(t *testing.T) {
+	if _, hasMarker := readyMarkers["gemini"]; hasMarker {
+		t.Skip("gemini gained a ready marker; pick another markerless kind")
+	}
+	s := &fakeSession{readPaneText: "Do you trust the contents of this directory?"}
+
+	// gemini has no blockedMarkers entry either, so it must pass cleanly --
+	// the check is per-kind, not a global screen scrape.
+	if err := waitAgentDrawn(s, "p1", "gemini"); err != nil {
+		t.Errorf("waitAgentDrawn on a kind with no markers = %v, want nil", err)
+	}
+}
+
+// The common case: nothing blocked, so nothing about the existing behaviour
+// changes.
+func TestApplySetupPromptsNormallyWhenNoBlockedMarkerIsOnScreen(t *testing.T) {
+	s := &fakeSession{readPaneText: "codex\n>  \n\nopus-4 · /repo"}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "codex", Prompt: "review this", Submit: true},
+	}}}}
+
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+	if l.promptCalls != 1 {
+		t.Errorf("agent.prompt calls = %d, want 1", l.promptCalls)
+	}
+}
+
+// on_launch's whole point: a modal that does come up gets answered.
+func TestOnLaunchSendsKeysWhenItsMatchAppears(t *testing.T) {
+	s := &fakeSession{}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "codex", Prompt: "review this", Submit: true, OnLaunch: []setup.OnLaunchStep{
+			{Match: "Do you trust", Keys: []string{"1", "Enter"}},
+		}},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(s.sendKeysCalls) != 1 {
+		t.Fatalf("SendKeys calls = %+v, want exactly one", s.sendKeysCalls)
+	}
+	if got := s.sendKeysCalls[0].keys; len(got) != 2 || got[0] != "1" || got[1] != "Enter" {
+		t.Errorf("keys sent = %v, want [1 Enter] verbatim", got)
+	}
+}
+
+// The common case, and the one that must never regress: no modal shows up,
+// so on_launch's wait times out and the pane is not failed over it.
+func TestOnLaunchThatNeverMatchesDoesNotFailThePane(t *testing.T) {
+	s := &fakeSession{waitOutputErrFor: map[string]error{
+		"Do you trust": errors.New("timed out"),
+	}}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "claude", Prompt: "review this", Submit: true, OnLaunch: []setup.OnLaunchStep{
+			{Match: "Do you trust", Keys: []string{"1", "Enter"}},
+		}},
+	}}}}
+
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none -- a modal that never showed up must not fail the pane", problems)
+	}
+	if len(s.sendKeysCalls) != 0 {
+		t.Errorf("SendKeys was called for a match that never appeared: %+v", s.sendKeysCalls)
+	}
+	if l.promptCalls != 1 {
+		t.Errorf("agent.prompt calls = %d, want 1 -- the pane should still get its prompt", l.promptCalls)
+	}
+}
+
+// Several entries have to run in the order the file lists them: the first
+// modal has to be cleared before the second one, if there is one, would even
+// be on screen.
+func TestOnLaunchEntriesRunInOrder(t *testing.T) {
+	s := &fakeSession{}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "codex", OnLaunch: []setup.OnLaunchStep{
+			{Match: "update available", Keys: []string{"Enter"}},
+			{Match: "Do you trust", Keys: []string{"1", "Enter"}},
+		}},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(s.sendKeysCalls) != 2 {
+		t.Fatalf("SendKeys calls = %+v, want two", s.sendKeysCalls)
+	}
+	if s.sendKeysCalls[0].keys[0] != "Enter" || s.sendKeysCalls[1].keys[0] != "1" {
+		t.Errorf("entries ran out of order: %+v", s.sendKeysCalls)
+	}
+	// And the wait for the second entry's match happened after the wait for
+	// the first's, not the other way round or concurrently.
+	var firstIdx, secondIdx = -1, -1
+	for i, call := range s.waitOutputCalls {
+		if call.value == "update available" && firstIdx == -1 {
+			firstIdx = i
+		}
+		if call.value == "Do you trust" && secondIdx == -1 {
+			secondIdx = i
+		}
+	}
+	if firstIdx == -1 || secondIdx == -1 || firstIdx > secondIdx {
+		t.Errorf("waitOutputCalls = %+v, want the first entry's wait before the second's", s.waitOutputCalls)
+	}
+}
+
+// A pane that answers a modal via on_launch still has to wait for its real
+// input before being prompted -- readiness is re-checked after on_launch
+// runs, not skipped because something was sent.
+func TestReadinessIsRecheckedAfterOnLaunchAnswersAModal(t *testing.T) {
+	s := &fakeSession{readPaneText: "opus-4 · /repo"} // the modal cleared
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "codex", Prompt: "review this", Submit: true, OnLaunch: []setup.OnLaunchStep{
+			{Match: "Do you trust", Keys: []string{"1", "Enter"}},
+		}},
+	}}}}
+
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("problems = %v, want none", problems)
+	}
+	if len(s.sendKeysCalls) != 1 {
+		t.Errorf("on_launch never ran: %+v", s.sendKeysCalls)
+	}
+	if l.promptCalls != 1 {
+		t.Errorf("agent.prompt calls = %d, want 1 -- the pane cleared the modal and should be prompted", l.promptCalls)
+	}
+}
+
+// on_launch answering a modal is only an attempt, not a guarantee -- if the
+// pane is still showing the same modal afterward (a wrong keypress, a second
+// dialog), that has to fail visibly the same as if on_launch had not run at
+// all.
+func TestStillBlockedAfterOnLaunchFailsVisibly(t *testing.T) {
+	s := &fakeSession{readPaneText: "Do you trust the contents of this directory?"}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Label: "codex-reviewer", Agent: "codex", Prompt: "review this", Submit: true, OnLaunch: []setup.OnLaunchStep{
+			{Match: "Do you trust", Keys: []string{"1", "Enter"}},
+		}},
+	}}}}
+
+	_, _, problems, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil)
+	if err != nil {
+		t.Fatalf("applySetup: %v", err)
+	}
+	if len(s.sendKeysCalls) != 1 {
+		t.Errorf("on_launch never ran: %+v", s.sendKeysCalls)
+	}
+	if l.promptCalls != 0 {
+		t.Errorf("the prompt was sent even though the modal never cleared")
+	}
+	if len(problems) != 1 || !strings.Contains(problems[0], "Do you trust") {
+		t.Errorf("problems = %v, want the still-on-screen modal named", problems)
+	}
+}
+
+// timeout_ms is per entry, and a blank one falls back to
+// setup.DefaultOnLaunchTimeoutMs -- both have to reach WaitPaneOutput, since
+// that is what actually bounds how long a pane sits waiting for a modal that
+// may never show.
+func TestOnLaunchTimeoutIsPerEntryWithADefaultWhenOmitted(t *testing.T) {
+	s := &fakeSession{}
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "reviewers", Panes: []setup.Pane{
+		{Agent: "codex", OnLaunch: []setup.OnLaunchStep{
+			{Match: "explicit timeout", Keys: []string{"Enter"}, TimeoutMs: 750},
+			{Match: "default timeout", Keys: []string{"Enter"}},
+		}},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: l}, &config.Settings{}, target.Target{}, def, rootPane(), "w1", "/repo", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawExplicit, sawDefault bool
+	for _, call := range s.waitOutputCalls {
+		if call.value == "explicit timeout" && call.timeoutMs == 750 {
+			sawExplicit = true
+		}
+		if call.value == "default timeout" && call.timeoutMs == setup.DefaultOnLaunchTimeoutMs {
+			sawDefault = true
+		}
+	}
+	if !sawExplicit {
+		t.Errorf("explicit timeout_ms was not honoured: %+v", s.waitOutputCalls)
+	}
+	if !sawDefault {
+		t.Errorf("omitted timeout_ms did not fall back to the default: %+v", s.waitOutputCalls)
+	}
+}
+
 func TestApplySetupFocusesTheMarkedPane(t *testing.T) {
 	l := &fakeLayout{}
 	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{

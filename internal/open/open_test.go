@@ -53,8 +53,21 @@ type fakeSession struct {
 	waitErr         error
 	waitOutputCalls []waitOutputCall
 	waitOutputErr   error
-	sendTextCalls   []sendTextCall
-	sendTextErr     error
+	// waitOutputErrFor overrides waitOutputErr for a specific match value,
+	// which is what lets a test give one on_launch entry's match a different
+	// outcome (found) than another's (never appears) in the same run.
+	// Checked before waitOutputErr; a match absent from the map falls back
+	// to it.
+	waitOutputErrFor map[string]error
+	sendTextCalls    []sendTextCall
+	sendTextErr      error
+
+	readPaneCalls []readPaneCall
+	readPaneText  string
+	readPaneErr   error
+
+	sendKeysCalls []sendKeysCall
+	sendKeysErr   error
 
 	// launchedAfterCall makes AgentLaunched report "still launching" for every
 	// call before this one (1-indexed), which is how the gap between a rendered
@@ -81,6 +94,14 @@ type waitOutputCall struct {
 	timeoutMs     int
 }
 type sendTextCall struct{ paneID, text string }
+type readPaneCall struct {
+	paneID, source string
+	lines          int
+}
+type sendKeysCall struct {
+	paneID string
+	keys   []string
+}
 
 func (f *fakeSession) CreateWorktree(req herdr.WorktreeRequest) (herdr.Pane, string, error) {
 	f.createWorktreeCalls = append(f.createWorktreeCalls, req)
@@ -121,7 +142,22 @@ func (f *fakeSession) WaitAgentIdle(paneID string) error {
 
 func (f *fakeSession) WaitPaneOutput(paneID, value string, timeoutMs int) error {
 	f.waitOutputCalls = append(f.waitOutputCalls, waitOutputCall{paneID, value, timeoutMs})
+	if f.waitOutputErrFor != nil {
+		if err, ok := f.waitOutputErrFor[value]; ok {
+			return err
+		}
+	}
 	return f.waitOutputErr
+}
+
+func (f *fakeSession) ReadPane(paneID, source string, lines int) (string, error) {
+	f.readPaneCalls = append(f.readPaneCalls, readPaneCall{paneID, source, lines})
+	return f.readPaneText, f.readPaneErr
+}
+
+func (f *fakeSession) SendKeys(paneID string, keys ...string) error {
+	f.sendKeysCalls = append(f.sendKeysCalls, sendKeysCall{paneID, append([]string(nil), keys...)})
+	return f.sendKeysErr
 }
 
 func (f *fakeSession) AgentLaunched(paneID string) (bool, error) {
