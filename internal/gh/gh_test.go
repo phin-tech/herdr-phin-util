@@ -270,3 +270,221 @@ func TestStackPropagatesCommandError(t *testing.T) {
 		t.Fatal("want an error when the gh command fails")
 	}
 }
+
+// routedRunner fakes two different gh invocations at once: `gh api graphql`
+// (the native fast path) and `gh pr list` (the walk's fallback). Testing the
+// native path's failure modes -- the whole point of it being a fast path,
+// not a replacement -- requires telling the two command shapes apart rather
+// than returning one canned answer for everything, which is what every
+// pre-existing fakeRunner-based test above does (and why they still pass
+// unmodified: an array is never valid GraphQL JSON, so the native attempt
+// always declines and falls through to the walk on the very same output).
+func routedRunner(graphqlOut string, graphqlErr error, listOut string, listErr error, calls *[][]string) CommandRunner {
+	return func(dir, name string, args ...string) ([]byte, error) {
+		call := append([]string{name}, args...)
+		*calls = append(*calls, call)
+		if len(args) >= 2 && args[0] == "api" && args[1] == "graphql" {
+			if graphqlErr != nil {
+				return nil, graphqlErr
+			}
+			return []byte(graphqlOut), nil
+		}
+		if listErr != nil {
+			return nil, listErr
+		}
+		return []byte(listOut), nil
+	}
+}
+
+// stackEntry is one node of a canned PullRequestStack GraphQL response.
+type stackEntry struct {
+	Position int
+	PR       prFixture
+}
+
+// stackGraphQLFixture renders the GraphQL shape stackNative parses, with
+// entries deliberately out of position order in some tests, since sorting by
+// position is stackNative's job, not something gh is trusted to have already
+// done.
+func stackGraphQLFixture(entries []stackEntry) string {
+	var b strings.Builder
+	b.WriteString(`{"data":{"repository":{"pullRequest":{"stack":{"entries":{"nodes":[`)
+	for i, e := range entries {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		url := fmt.Sprintf("https://github.com/o/r/pull/%d", e.PR.Number)
+		sha := e.PR.SHA
+		if sha == "" {
+			sha = fmt.Sprintf("sha%d", e.PR.Number)
+		}
+		fmt.Fprintf(&b, `{"position":%d,"pullRequest":{"number":%d,"title":%q,"url":%q,"headRefName":%q,"baseRefName":%q,"headRefOid":%q}}`,
+			e.Position, e.PR.Number, e.PR.Title, url, e.PR.Head, e.PR.Base, sha)
+	}
+	b.WriteString(`]}}}}}}`)
+	return b.String()
+}
+
+// stackGraphQLNullFixture is what GitHub returns for a PR that was never
+// stacked through its own tooling -- verified empirically against
+// phin-tech/herdr-phin-util#16, a real git-built stack.
+func stackGraphQLNullFixture() string {
+	return `{"data":{"repository":{"pullRequest":{"stack":null}}}}`
+}
+
+// The native fast path, when GitHub actually knows about the stack, must
+// order strictly by position (not by whatever order the entries arrived in)
+// and map every StackPR field -- and it must not fall back to gh pr list at
+// all, since that would defeat the entire point of a one-query fast path.
+func TestStackNativeFastPathOrdersByPositionAndMapsFields(t *testing.T) {
+	entries := []stackEntry{
+		{Position: 2, PR: prFixture{Number: 101, Title: "middle", Head: "b101", Base: "b100"}},
+		{Position: 1, PR: prFixture{Number: 100, Title: "bottom", Head: "b100", Base: "main"}},
+		{Position: 3, PR: prFixture{Number: 102, Title: "top", Head: "b102", Base: "b101"}},
+	}
+	var calls [][]string
+	c := &Client{run: routedRunner(
+		stackGraphQLFixture(entries), nil,
+		"", errors.New("gh pr list must not run when the native path succeeds"),
+		&calls,
+	)}
+
+	got, err := c.Stack("o", "r", 101)
+	if err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+	assertStackOrder(t, got, []int{100, 101, 102})
+
+	top := got[2]
+	if top.Title != "top" || top.URL != "https://github.com/o/r/pull/102" ||
+		top.HeadBranch != "b102" || top.BaseBranch != "b101" || top.HeadSHA != "sha102" {
+		t.Errorf("top layer = %+v, want every field mapped from the graphql fixture", top)
+	}
+
+	for _, call := range calls {
+		if len(call) >= 2 && call[0] == "gh" && call[1] == "pr" {
+			t.Fatalf("native success must not issue gh pr list, but got %v", call)
+		}
+	}
+}
+
+// pr.stack coming back null -- a stack built with plain git, per the
+// empirical finding on stackNative -- must fall through to the walk, and
+// the walk must produce its ordinary answer with no error surfaced.
+func TestStackNativeNullFallsBackToWalk(t *testing.T) {
+	var calls [][]string
+	c := &Client{run: routedRunner(
+		stackGraphQLNullFixture(), nil,
+		stackFixture(threeLayerStack()), nil,
+		&calls,
+	)}
+
+	got, err := c.Stack("o", "r", 100)
+	if err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+	assertStackOrder(t, got, []int{100, 101, 102})
+
+	sawList := false
+	for _, call := range calls {
+		if len(call) >= 2 && call[0] == "gh" && call[1] == "pr" {
+			sawList = true
+		}
+	}
+	if !sawList {
+		t.Fatal("stack: null must fall back to gh pr list")
+	}
+}
+
+// A GraphQL command failure -- old gh, missing scopes, a network blip --
+// must not be fatal: it falls back to the walk and the walk's answer is
+// returned with no error surfaced, so a user on an older gh sees no
+// behaviour change at all.
+func TestStackNativeCommandErrorFallsBackToWalk(t *testing.T) {
+	c := &Client{run: routedRunner(
+		"", errors.New("exit status 1: unknown field 'stack'"),
+		stackFixture(threeLayerStack()), nil,
+		new([][]string),
+	)}
+
+	got, err := c.Stack("o", "r", 100)
+	if err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+	assertStackOrder(t, got, []int{100, 101, 102})
+}
+
+// Malformed GraphQL JSON (not just an error exit) must also fall back to the
+// walk rather than surfacing a decode error.
+func TestStackNativeMalformedJSONFallsBackToWalk(t *testing.T) {
+	c := &Client{run: routedRunner(
+		"not json", nil,
+		stackFixture(threeLayerStack()), nil,
+		new([][]string),
+	)}
+
+	got, err := c.Stack("o", "r", 100)
+	if err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+	assertStackOrder(t, got, []int{100, 101, 102})
+}
+
+// A linear chain -- the common case, and the only shape a native
+// PullRequestStack can ever have -- yields exactly one path from Stacks.
+func TestStacksLinearChainYieldsOnePath(t *testing.T) {
+	c := &Client{run: fakeRunner(stackFixture(threeLayerStack()), nil, new([][]string))}
+
+	paths, err := c.Stacks("o", "r", 100)
+	if err != nil {
+		t.Fatalf("Stacks: %v", err)
+	}
+	if len(paths) != 1 {
+		t.Fatalf("paths = %d, want 1 (%+v)", len(paths), paths)
+	}
+	assertStackOrder(t, paths[0], []int{100, 101, 102})
+}
+
+// A fork -- two open PRs sharing a base -- yields one path per tip from
+// Stacks, each bottom-first and sharing the common trunk-ward prefix, rather
+// than Stack's refusal.
+func TestStacksForkYieldsOnePathPerTip(t *testing.T) {
+	c := &Client{run: fakeRunner(stackFixture([]prFixture{
+		{Number: 10, Title: "bottom", Head: "b10", Base: "main"},
+		{Number: 11, Title: "left", Head: "b11", Base: "b10"},
+		{Number: 12, Title: "right", Head: "b12", Base: "b10"},
+	}), nil, new([][]string))}
+
+	paths, err := c.Stacks("o", "r", 10)
+	if err != nil {
+		t.Fatalf("Stacks: %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths = %d, want 2 (%+v)", len(paths), paths)
+	}
+	assertStackOrder(t, paths[0], []int{10, 11})
+	assertStackOrder(t, paths[1], []int{10, 12})
+}
+
+// A fork above a fork -- #12 itself later forks into #13 and #14 -- must
+// enumerate every tip in the tree, not just the first level.
+func TestStacksForkAboveAForkEnumeratesEveryTip(t *testing.T) {
+	c := &Client{run: fakeRunner(stackFixture([]prFixture{
+		{Number: 10, Title: "bottom", Head: "b10", Base: "main"},
+		{Number: 11, Title: "left", Head: "b11", Base: "b10"},
+		{Number: 12, Title: "right", Head: "b12", Base: "b10"},
+		{Number: 13, Title: "right-left", Head: "b13", Base: "b12"},
+		{Number: 14, Title: "right-right", Head: "b14", Base: "b12"},
+	}), nil, new([][]string))}
+
+	paths, err := c.Stacks("o", "r", 10)
+	if err != nil {
+		t.Fatalf("Stacks: %v", err)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("paths = %d, want 3 (%+v)", len(paths), paths)
+	}
+	assertStackOrder(t, paths[0], []int{10, 11})
+	assertStackOrder(t, paths[1], []int{10, 12, 13})
+	assertStackOrder(t, paths[2], []int{10, 12, 14})
+}

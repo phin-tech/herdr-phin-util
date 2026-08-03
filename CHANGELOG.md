@@ -6,6 +6,35 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.10.0 — 2026-08-03
+
+A stack GitHub knows about is read from GitHub; everything else is still
+reconstructed by hand.
+
+- `internal/gh` gained `Stacks`, enumerating every path from the bottom of a
+  chain to a tip rather than refusing on a fork the way `Stack` always has —
+  a prerequisite for #14's picker, which needs one row per path rather than
+  one answer. `Stack` is now a thin wrapper: exactly one path is returned
+  as-is, more than one still produces the same fork error as before, wording
+  unchanged.
+- Both now try GitHub's own `PullRequestStack` API first — one query,
+  authoritative, forkless by construction — before falling back to the
+  `baseRefName` walk that has done this since #13. That fast path is
+  narrower than it sounds: `pr.stack` came back **null** against the live
+  API for a real stack built with plain git (verified against this repo's
+  own #16), so it only ever answers for a stack GitHub's own stacking tool
+  created. Any failure — the field is null, the command errors, the JSON is
+  not what was expected — falls through to the walk silently; nothing about
+  this is allowed to be fatal, since a user on an older `gh` must see no
+  behaviour change at all.
+- The cost of that, stated plainly rather than buried: a stack built with
+  plain git now pays one extra `gh api graphql` round trip before the walk
+  it was always going to do, every time a `for_each: layers` setup resolves.
+  That is the whole price of the fast path for anyone not using GitHub's own
+  stacking, and it buys them nothing today. It is worth it only on the bet
+  that native stacks become the common case; if they do not, the honest
+  thing later is to delete the fast path rather than keep paying for it.
+
 ## 0.9.0 — 2026-08-03
 
 A tab can pin itself to a git ref of its own ([#12]).
