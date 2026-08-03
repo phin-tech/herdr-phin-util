@@ -82,6 +82,15 @@ far it says so and opens the Space in the session's own directory. --dry-run
 prints which session it would take without opening anything.
 `
 
+// isHelpFlag is the one test every subcommand's help handling shares. It is
+// deliberately narrow: only the two conventional flags count, never the bare
+// word "help", because some subcommands (open, project) take arbitrary text
+// or a path as their first argument and "help" is a legitimate value for
+// either -- see the comments at each call site.
+func isHelpFlag(s string) bool {
+	return s == "-h" || s == "--help"
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -126,12 +135,21 @@ func main() {
 	}
 }
 
+const openUsage = "usage: herdr-phin-util open <link-or-text> [--agent|--no-agent] [--prompt TEXT] [--setup NAME] [--dry-run]"
+
 // runOpen is the plain, testable-from-a-shell entry point for the "smart
 // workspace maker": everything the popup does, without the popup.
 func runOpen(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-phin-util open <link-or-text> [--agent|--no-agent] [--prompt TEXT] [--setup NAME] [--dry-run]")
+		fmt.Fprintln(os.Stderr, openUsage)
 		return 2
+	}
+	// "help" is not tested here on purpose: the input is arbitrary text by
+	// design, so `open help` has to build a Space named "help" rather than
+	// print usage. Only the two conventional flags ask for help.
+	if isHelpFlag(args[0]) {
+		fmt.Println(openUsage)
+		return 0
 	}
 	input := args[0]
 
@@ -141,6 +159,9 @@ func runOpen(args []string) int {
 	var dryRun bool
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "-h", "--help":
+			fmt.Println(openUsage)
+			return 0
 		case "--agent":
 			v := true
 			agentOverride = &v
@@ -536,12 +557,20 @@ func runProjects() int {
 	return 0
 }
 
+const projectUsage = "usage: herdr-phin-util project <dir> [--agent|--no-agent] [--setup NAME] [--dry-run]"
+
 // runProject is the picker's outcome without the picker -- the shell-testable
 // half, same as "open" is for the workspace maker.
 func runProject(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-phin-util project <dir> [--agent|--no-agent] [--setup NAME] [--dry-run]")
+		fmt.Fprintln(os.Stderr, projectUsage)
 		return 2
+	}
+	// Same reasoning as runOpen: a checkout could genuinely be named "help",
+	// so only -h/--help are treated as a request for usage.
+	if isHelpFlag(args[0]) {
+		fmt.Println(projectUsage)
+		return 0
 	}
 	dir := args[0]
 
@@ -550,6 +579,9 @@ func runProject(args []string) int {
 	var dryRun bool
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
+		case "-h", "--help":
+			fmt.Println(projectUsage)
+			return 0
 		case "--agent":
 			v := true
 			agentOverride = &v
@@ -654,6 +686,8 @@ func invocationCwd() string {
 	return ""
 }
 
+const handoffUsage = "usage: herdr-phin-util handoff [--session ID] [--label TEXT] [--cwd PATH] [--dry-run] [--force]"
+
 // runHandoff resumes the Claude session the caller is sitting in inside a new
 // Space.
 //
@@ -665,6 +699,9 @@ func runHandoff(args []string) int {
 	var force, dryRun bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-h", "--help":
+			fmt.Println(handoffUsage)
+			return 0
 		case "--force":
 			force = true
 		case "--dry-run":

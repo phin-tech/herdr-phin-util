@@ -88,6 +88,60 @@ A pane is exactly one of:
 `agent` must be a kind Herdr knows: `claude`, `codex`, `gemini`, `cursor`,
 `opencode`, `copilot`, `amp`, `droid`, `pi`, and others.
 
+### A command pane's Herdr identity
+
+Every `command:` pane is typed with a leading environment assignment naming
+where it is, so it never has to poll `herdr pane list` to find itself or a
+labelled sibling:
+
+```
+HERDR_WORKSPACE_ID=w2H HERDR_TAB_ID=w2H:t1 HERDR_PANE_ID=w2H:p2 HERDR_PANE_META_ORCHESTRATOR=w2H:p1 ./my-script.py
+```
+
+- `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID` — the pane's own three
+  ids.
+- `HERDR_PANE_<NAME>` — one per **labelled pane anywhere in the setup**, not
+  just the same tab, including the command pane's own label if it has one.
+  `<NAME>` is the label upper-cased, with every run of non-alphanumeric
+  characters folded to a single `_` and leading/trailing `_` trimmed:
+  `meta-orchestrator` → `META_ORCHESTRATOR`. A label that folds to nothing
+  (pure punctuation) or that would start with a digit gets no variable — an
+  illegal name is worse than a missing one. If two labels fold to the same
+  name, **the first one in the file wins**; the later one is silently
+  dropped rather than left to chance.
+- Agent panes get none of this. They have no use for it (`herdr pane
+  current` answers the same question from inside the agent), and there is
+  nothing to prefix a prompt onto.
+- `--dry-run` cannot show real ids — nothing has been built yet when a plan
+  is only previewed — but it does list which variable *names* a `command:`
+  pane will receive, e.g. `herdr    HERDR_WORKSPACE_ID, HERDR_TAB_ID,
+  HERDR_PANE_ID, HERDR_PANE_META_ORCHESTRATOR`.
+
+**The one real limitation, and it will bite silently if ignored:** a
+`KEY=value` prefix scopes to exactly one *simple* command. It works for
+`./my-script.py` or `python discover.py --flag`. It does **not** propagate
+past a shell control operator:
+
+```yaml
+command: cd layers && ./discover.py     # HERDR_* vars reach `cd`, not discover.py
+```
+
+`&&`, `||`, `;`, `|` and a literal newline all start a new simple command, and
+only the first one sees the prefix. There is no portable fix folded in here
+on purpose — `export` is spelled differently in fish (`set -x`) than in
+POSIX shells, and the pane's shell is not knowable from the setup file — so a
+`command:` that chains stages and needs the vars past the first one has to
+re-export them itself. A pipeline is usually fine as written, since the first
+stage is normally the one doing the reading.
+
+Labels (and any agent already declared) are guaranteed to be attached before
+any `command:` pane in the whole setup runs: every pane is built and every
+label applied in one pass, before any command or agent prompt goes out in a
+second pass (see "Inheritance and ordering" below). An agent that comes
+*later* in the file is not guaranteed to have **launched** by the time an
+earlier command pane runs — only its pane id is, via `HERDR_PANE_<NAME>`,
+which is enough to address it without polling for it to exist.
+
 ### model and args
 
 `model:` and `args:` are the agent's command line: `--model <model>` first,
@@ -121,13 +175,60 @@ will read. The usual shape of a good fan-out setup is workers with
 `submit: true` and one orchestrator without, so the workers are already going
 by the time you have read the brief.
 
+### for_each: repeating a tab
+
+A tab can build itself once per element of a **named list** instead of once:
+
+```yaml
+tabs:
+  - for_each: layers          # a name the target resolved, not a template
+    as: layer                 # defaults to for_each's own name if omitted
+    name: "L{{.layer_layer}} #{{.layer_pr}}"
+    cwd: "{{.layer_worktree}}"
+    panes:
+      - label: "l{{.layer_layer}}-claude"
+        agent: claude
+        submit: true
+        prompt: "Review PR #{{.layer_pr}} at {{.layer_head_sha}}"
+```
+
+`for_each` names a list, it is never itself a template expression — there is
+no target kind yet that produces one (tracked separately), so today every
+`for_each` fails at run time with an error naming the lists that were
+available, which is `--dry-run`'s way of saying "this setup needs a target
+this plugin cannot yet resolve."
+
+Each element's own fields render **flat**, prefixed with `as`: `{{.layer_pr}}`,
+never `{{.layer.pr}}`. That is deliberate, not an oversight — the same plain
+`map[string]string` backs every template in this file, and nesting would need
+a second, richer value type just for this one feature. `<as>_index` is also
+set, 1-based (`{{.layer_index}}`); an element field actually named `index`
+wins over it, since the element's own data should never be shadowed by
+bookkeeping this feature added.
+
+An empty list is not an error — it builds **zero** tabs for that entry and
+moves on, which matters if a `for_each` is the first tab in the file: the next
+tab correctly becomes the one that reuses the Space's own tab. A `for_each`
+naming a list the target never provided **is** an error, and it is checked
+before any pane in the whole setup is built, not partway through.
+
+`focus: true` inside a `for_each` tab is rejected at load time: every
+repetition would set it, and only the last one built would silently win.
+
+This is the one loop this file format has, and deliberately the only one — no
+`when:`, no conditionals, no nesting one `for_each` inside another. Anything
+that needs real logic belongs in a `command:` pane instead of in YAML.
+
 ### Templates
 
-Prompts, commands and env values are Go `text/template`, rendered against the
-target:
+Prompts, commands, env values, a tab's `name`, a pane's `label` and every
+`cwd` are Go `text/template`, rendered against the target:
 
 `{{.URL}} {{.Host}} {{.Owner}} {{.Repo}} {{.Number}} {{.Title}} {{.Issue}}
 {{.Slug}} {{.Branch}} {{.Text}} {{.Path}}`
+
+— plus, inside a `for_each` tab, every `<as>_<key>` field for that element and
+`<as>_index`.
 
 A misspelled placeholder renders empty rather than failing the action, so
 `--dry-run` is the only way to notice one. `{{.Number}}` and `{{.Title}}` are
@@ -143,6 +244,9 @@ empty for a plain checkout; `{{.Branch}}` is empty until one is resolved.
   The first pane of the first tab reuses the Space's own pane; later tabs are
   created unfocused.
 - Every pane is created before anything runs in one, and focus is applied last.
+  Labels are applied in this same first pass, so every `HERDR_PANE_<NAME>`
+  variable a `command:` pane receives names a pane that already has its
+  label — see "A command pane's Herdr identity" above.
 - `wait_for` holds the rest of the layout until that pane's output matches. Use
   it when a later pane's prompt depends on an earlier pane having started. A
   timeout is not fatal — it warns and carries on. A pane whose work never
@@ -192,7 +296,10 @@ the usual ones.
 or `panes`, never both; the first pane of a tab cannot `split`; `split` is only
 `right` or `down`; `ratio` is strictly between 0 and 1; a prompt needs an
 agent; `model` and `args` need an agent; an agent and a command cannot share a
-pane; only one pane may be `focus`.
+pane; only one pane may be `focus`; `focus: true` is rejected inside a
+`for_each` tab outright; `as:` requires a `for_each:` on the same tab; a
+`for_each:` with nothing after it (once trimmed) is rejected rather than
+silently treated as "no for_each".
 
 **The agent rejected a flag.** `model` and `args` are passed through
 untouched, so an unknown model name or a flag that kind does not have is that

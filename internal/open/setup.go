@@ -3,6 +3,7 @@ package open
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -84,7 +85,14 @@ func PreviewSetup(deps Deps, cfg *config.Settings, input string, def setup.Setup
 		data["Path"] = cwd
 	}
 
-	plan, err := def.Resolve(cwd, data)
+	// Lists has no source yet: the target kind that would populate it -- a
+	// github_stack that walks baseRefName across a chain of pull requests --
+	// is #7's own follow-up, deliberately not built here. Until that exists,
+	// every target resolves zero lists, and a setup's for_each tab fails with
+	// the "provides no lists" error tabIterations produces -- which is
+	// exactly what a preview of an unsupported for_each should show rather
+	// than silently rendering zero tabs.
+	plan, err := def.ResolveData(cwd, setup.Data{Vars: data})
 	return plan, tgt, err
 }
 
@@ -119,7 +127,11 @@ type Layout interface {
 func applySetup(deps Deps, cfg *config.Settings, def setup.Setup, root herdr.Pane, workspaceID, cwd string, data map[string]string) (setup.Plan, []string, []string, error) {
 	l := deps.Layout
 
-	plan, err := def.Resolve(cwd, data)
+	// Same "no source yet" gap as PreviewSetup: Lists is nil until a target
+	// kind exists to fill it, which is where that target's resolved chain of
+	// per-element vars would be built and handed to ResolveData instead of
+	// the zero value below.
+	plan, err := def.ResolveData(cwd, setup.Data{Vars: data})
 	if err != nil {
 		return setup.Plan{}, nil, nil, fmt.Errorf("setup %q: %w", def.Name, err)
 	}
@@ -131,10 +143,19 @@ func applySetup(deps Deps, cfg *config.Settings, def setup.Setup, root herdr.Pan
 	// appearing, then each pane being given what it is for. The first is fast
 	// and the second is where the minutes go.
 	done := deps.Progress.step("panes", fmt.Sprintf("Building %s", countOf(len(plan.Steps), "pane")))
-	panes, problems := buildPanes(l, plan, root, workspaceID)
+	built, problems := buildPanes(l, plan, root, workspaceID)
 	done(nil)
 
-	problems = append(problems, fillPanes(deps, cfg, plan, panes, workspaceID)...)
+	// The public shape (a plain []string, one id per step) is kept for
+	// applySetup's own callers -- Outcome.SetupPanes only ever wanted a count
+	// and a focus target -- while fillPanes gets the richer built slice, since
+	// that is what constructing a command's HERDR_TAB_ID needs.
+	panes := make([]string, len(built))
+	for i, b := range built {
+		panes[i] = b.PaneID
+	}
+
+	problems = append(problems, fillPanes(deps, cfg, plan, built, workspaceID)...)
 
 	// Focus last, once there is nothing left to build that could steal it.
 	// Losing it is cosmetic next to a Space that is otherwise standing.
@@ -144,10 +165,34 @@ func applySetup(deps Deps, cfg *config.Settings, def setup.Setup, root herdr.Pan
 	return plan, panes, problems, nil
 }
 
-// buildPanes creates every tab and pane, returning one pane id per step -- an
-// empty one for a step whose pane could not be made -- and what went wrong.
-func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) ([]string, []string) {
-	panes := make([]string, len(plan.Steps))
+// builtPane is what a step turned into once buildPanes has run: the pane id
+// (empty if it could not be made) and the id of the tab it lives in.
+//
+// TabID is never asked of Layout.SplitPane -- unlike CreateTab, splitting a
+// tab that already exists has no reason to report that tab's id back -- so it
+// is carried here instead, filled in from whichever FirstTab/NewTab step
+// opened the tab a split belongs to. That is enough on its own: every split
+// step's Step.Tab names the tab it is in, and that tab's id was learned the
+// moment it was created.
+type builtPane struct {
+	PaneID string
+	TabID  string
+}
+
+// buildPanes creates every tab and pane, returning one builtPane per step --
+// an empty PaneID for a step whose pane could not be made -- and what went
+// wrong.
+//
+// Labels are applied here, in this same pass, before fillPanes runs a single
+// command or starts a single agent. That ordering is not incidental: it is
+// what #9's HERDR_PANE_<LABEL> variables lean on, and what makes the "labels
+// land before any command runs" guarantee true rather than aspirational. See
+// fillPane and herdrPaneEnv for the other half of that story -- pane ids
+// exist by the time this function returns, but an agent later in the plan
+// still starts later in fillPanes, so a labelled pane's *agent* is not
+// guaranteed to have attached yet, only its id and label.
+func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) ([]builtPane, []string) {
+	built := make([]builtPane, len(plan.Steps))
 	var problems []string
 
 	// prev is the pane the next split targets: a split is relative to the pane
@@ -156,6 +201,11 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 	// split leaves it alone, so the next pane in the tab chains off the last
 	// one that does exist rather than off nothing.
 	prev := root.PaneID
+
+	// tabID is the id of whichever tab is currently being filled in -- set the
+	// moment that tab's own FirstTab/NewTab step runs, and reused by every
+	// split step in it, since a split never changes what tab it is in.
+	var tabID string
 
 	// abandoned is a tab whose own pane could not be created. Its splits would
 	// target the previous tab's pane instead, quietly putting panes in a tab
@@ -178,16 +228,20 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 					problems = append(problems, fmt.Sprintf("name the first tab %q: %v", step.TabName, err))
 				}
 			}
-			panes[i] = root.PaneID
+			built[i].PaneID = root.PaneID
+			built[i].TabID = root.TabID
+			tabID = root.TabID
 
 		case step.NewTab:
-			pane, _, err := l.CreateTab(workspaceID, step.Cwd, step.TabName, step.Env, false)
+			pane, newTabID, err := l.CreateTab(workspaceID, step.Cwd, step.TabName, step.Env, false)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("create tab %q: %v", stepTab(step), err))
 				abandoned = step.Tab
 				continue
 			}
-			panes[i] = pane.PaneID
+			built[i].PaneID = pane.PaneID
+			built[i].TabID = newTabID
+			tabID = newTabID
 			prev = pane.PaneID
 
 		default:
@@ -196,26 +250,27 @@ func buildPanes(l Layout, plan setup.Plan, root herdr.Pane, workspaceID string) 
 				problems = append(problems, fmt.Sprintf("split pane %d of tab %q: %v", step.PaneIdx+1, stepTab(step), err))
 				continue
 			}
-			panes[i] = pane.PaneID
+			built[i].PaneID = pane.PaneID
+			built[i].TabID = tabID
 			prev = pane.PaneID
 		}
 
-		if step.Label != "" && panes[i] != "" {
+		if step.Label != "" && built[i].PaneID != "" {
 			// A label is decoration; losing it is not worth losing the Space.
-			_ = l.RenamePane(panes[i], step.Label)
+			_ = l.RenamePane(built[i].PaneID, step.Label)
 		}
 	}
-	return panes, problems
+	return built, problems
 }
 
 // fillPanes starts what each pane is for, in the order the file listed them,
 // and reports what did not start without holding up what is next.
-func fillPanes(deps Deps, cfg *config.Settings, plan setup.Plan, panes []string, workspaceID string) []string {
+func fillPanes(deps Deps, cfg *config.Settings, plan setup.Plan, built []builtPane, workspaceID string) []string {
 	s, l := deps.Session, deps.Layout
 	var problems []string
 
 	for i, step := range plan.Steps {
-		paneID := panes[i]
+		paneID := built[i].PaneID
 		if paneID == "" {
 			continue
 		}
@@ -223,7 +278,7 @@ func fillPanes(deps Deps, cfg *config.Settings, plan setup.Plan, panes []string,
 		// One line per pane, named the way the file names it, so a run that is
 		// sitting on a slow agent says which agent rather than just "working".
 		done := deps.Progress.step(fmt.Sprintf("pane-%d", i), fillLabel(step))
-		err := fillPane(s, l, cfg, step, paneID, i, workspaceID)
+		err := fillPane(s, l, cfg, plan, built, i, workspaceID)
 		done(err)
 
 		if err != nil {
@@ -259,10 +314,23 @@ func fillPanes(deps Deps, cfg *config.Settings, plan setup.Plan, panes []string,
 
 // fillPane gives one pane the thing it exists for: a command, or an agent and
 // whatever prompt goes with it.
-func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID string, index int, workspaceID string) error {
+//
+// Only a command pane gets the HERDR_ environment (see herdrPaneEnv): the
+// issue this answers has no use for it on an agent pane, since an agent can
+// just run `herdr pane current` itself and has the patience to poll, and
+// prefixing an agent's prompt would make no sense -- a prompt is not a shell
+// command, and there is nothing to prefix it onto.
+func fillPane(s Session, l Layout, cfg *config.Settings, plan setup.Plan, built []builtPane, index int, workspaceID string) error {
+	step := plan.Steps[index]
+	paneID := built[index].PaneID
+
 	switch {
 	case step.Command != "":
-		if err := l.RunCommand(paneID, step.Command); err != nil {
+		command := step.Command
+		if env := herdrPaneEnv(plan, built, workspaceID, index); len(env) > 0 {
+			command = herdrEnvPrefix(env) + command
+		}
+		if err := l.RunCommand(paneID, command); err != nil {
 			return fmt.Errorf("run %q in tab %q: %w", step.Command, stepTab(step), err)
 		}
 
@@ -276,6 +344,129 @@ func fillPane(s Session, l Layout, cfg *config.Settings, step setup.Step, paneID
 		return sendSetupPrompt(s, l, step, paneID)
 	}
 	return nil
+}
+
+// herdrPaneEnv builds the Herdr identity environment for one command step:
+// its own workspace, tab and pane id, plus one HERDR_PANE_<NAME> variable per
+// labelled pane anywhere in the whole plan that was actually built --
+// including this step's own pane, which is harmless (issue #9 called it out
+// explicitly) and keeps the resulting set predictable rather than
+// special-casing self-reference away.
+//
+// This can only run from fillPanes, never earlier: a step's own pane id does
+// not exist until buildPanes has created it, and a sibling's id does not
+// exist until the whole layout has been built, both of which are true by the
+// time fillPanes runs and neither of which is true any sooner. See
+// herdrEnvPrefix for the mechanism this environment travels over and its one
+// real limitation.
+//
+// A step whose own pane failed to build gets nil: there is no pane to type an
+// env prefix into. A labelled pane that failed to build is left out of the
+// sibling set for the same reason -- built[i].PaneID == "" -- so a script
+// never sees an HERDR_PANE_<NAME> pointing at a pane that does not exist.
+//
+// Label folding collisions resolve first-in-plan-order: the loop below walks
+// plan.Steps in file order and env's key-existence check makes the first
+// pane whose label folds to a given name the one that wins, silently
+// discarding a later label that folds the same way. That includes the
+// reserved keys seeded before the loop -- a label that happens to fold to
+// "ID" cannot displace this step's own HERDR_PANE_ID, since that key already
+// exists in env when the loop reaches it.
+func herdrPaneEnv(plan setup.Plan, built []builtPane, workspaceID string, index int) map[string]string {
+	pane := built[index]
+	if pane.PaneID == "" {
+		return nil
+	}
+
+	env := map[string]string{
+		"HERDR_WORKSPACE_ID": workspaceID,
+		"HERDR_TAB_ID":       pane.TabID,
+		"HERDR_PANE_ID":      pane.PaneID,
+	}
+
+	for i, step := range plan.Steps {
+		if step.Label == "" || built[i].PaneID == "" {
+			continue
+		}
+		name, ok := setup.FoldLabel(step.Label)
+		if !ok {
+			continue
+		}
+		key := "HERDR_PANE_" + name
+		if _, taken := env[key]; taken {
+			continue
+		}
+		env[key] = built[i].PaneID
+	}
+	return env
+}
+
+// herdrEnvPrefix renders a step's Herdr identity variables as a shell
+// assignment prefix -- "KEY='value' KEY2='value2' " -- typed ahead of the
+// command itself in RunCommand.
+//
+// This is the *only* channel available for it, which is worth being explicit
+// about since the obvious-looking alternative does not exist. Herdr's
+// env-at-creation (the env parameter CreateTab and SplitPane already take)
+// cannot carry these values: a pane's own id is not assigned until Herdr
+// creates it, and a sibling's id is not assigned until the whole layout is
+// built -- both after creation-time env would have had to be supplied to
+// have any effect. There is also no pane.setenv (or similar) call in Herdr's
+// API to fill that gap afterwards. A typed prefix in front of the command
+// the setup already sends via RunCommand is what is left, and it works
+// because sh, bash, zsh and fish (3.1+) all honour "KEY=val cmd" as scoping
+// KEY to that one command's environment.
+//
+// That scoping is also the caveat that has to be spelled out here rather
+// than discovered the hard way: a var=val prefix applies to exactly one
+// *simple* command. "HERDR_PANE_ID=w2H:p2 cd x && python y" does NOT put
+// HERDR_PANE_ID in python's environment -- only cd sees it, because && opens
+// a new simple command. The same is true of ||, ;, | and a literal newline:
+// only the first stage of a chain or pipeline gets these vars for free. There
+// is no portable fix folded in here on purpose -- fish spells "export" as
+// "set -x", POSIX shells spell it "export", and the pane's shell is not
+// knowable from this function, so guessing wrong would be worse than saying
+// nothing. A setup command that needs the vars past the first stage of a
+// chain has to re-export them itself; one that pipes is usually fine, since
+// it is normally the first stage that does the reading.
+//
+// Keys are emitted in sorted order for two reasons: a deterministic typed
+// command is easier to reason about than one whose order depends on map
+// iteration, and RunCommand's echoProbe (internal/herdr/api.go) matches
+// against a short leading fragment of whatever was actually typed. A prefix
+// does not break that match -- the probe is looking for whatever the pane
+// echoes, and the prefix is exactly what gets echoed first -- but an
+// unstable prefix would make that fragment differ run to run for no reason.
+// One real consequence of echoProbeLen (12 bytes) is worth knowing: once a
+// step carries any of these variables, the probe is dominated by
+// "HERDR_WORKS..." rather than by the command itself, so it stops
+// distinguishing one command from another. That costs nothing here --
+// RunCommand only ever checks its own pane's own screen against its own
+// probe, never one pane's probe against another's -- but it would matter to
+// anything that started reusing echoProbe to tell commands apart.
+func herdrEnvPrefix(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+shellQuote(env[k]))
+	}
+	return strings.Join(parts, " ") + " "
+}
+
+// shellQuote wraps a value in single quotes, closing and reopening the quote
+// around any single quote already in it (' -> '\”). That is the one quoting
+// form sh, bash, zsh and fish all agree on -- fish's own quoting rules differ
+// from POSIX's in other ways, but not in this one.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Prompt pacing. The readiness checks in startSetupAgent are a good guess at
@@ -423,6 +614,15 @@ func waitAgentLaunched(s Session, paneID string) error {
 // the pane's label if it has one, the tab's name if it does not, and an index
 // suffix either way, since a fan-out setup runs three agents that would
 // otherwise all want the same name.
+//
+// index is the pane's position in the whole plan, not within its tab -- the
+// caller passes plan.Steps' own index (see fillPanes) -- which is what keeps
+// a for_each tab safe without this function knowing for_each exists: three
+// tabs repeated from one template still render the same Label or TabName
+// three times over, but each occurrence lands at a different plan index, so
+// the suffix is never the same twice. Do not "simplify" this back to a
+// per-tab counter; that is exactly the collision #5's agent_name_taken guards
+// against, and a two-element test list would not catch it going missing.
 func setupAgentName(step setup.Step, index int) string {
 	base := step.Label
 	if base == "" {

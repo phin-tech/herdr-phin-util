@@ -402,6 +402,62 @@ plain shell.
   beats an allowlist that goes stale.
 - Unknown keys are reported, not ignored.
 
+**A `command:` pane's Herdr identity:** every `command:` pane is typed with a
+leading env assignment naming where it is —
+
+```
+HERDR_WORKSPACE_ID=w2H HERDR_TAB_ID=w2H:t1 HERDR_PANE_ID=w2H:p2 HERDR_PANE_META_ORCHESTRATOR=w2H:p1 ./my-script.py
+```
+
+— so it never has to poll `herdr pane list` to find itself or a labelled
+sibling. `HERDR_PANE_<NAME>` exists for every labelled pane **anywhere in the
+setup**, `<NAME>` being the label upper-cased with runs of non-alphanumerics
+folded to one `_` and leading/trailing `_` trimmed (`meta-orchestrator` →
+`META_ORCHESTRATOR`); a label folding to nothing or starting with a digit gets
+no variable, and a fold collision resolves to whichever label came first in
+the file. Agent panes get none of this — they have no use for it and there is
+nothing to prefix a prompt onto. `--dry-run` lists the variable *names* a
+command pane will get (ids are not knowable before anything is built).
+
+**The one real limitation:** the `KEY=value` prefix scopes to exactly one
+*simple* command, so it does not reach past `&&`, `||`, `;`, `|` or a newline
+— `cd x && ./discover.py` puts the vars in `cd`'s environment, not
+`discover.py`'s. There is no portable fix for this (fish spells "export" `set
+-x`; POSIX shells spell it `export`; the pane's shell is not knowable from the
+setup file), so a chained command has to re-export what it needs itself.
+
+**Repeating a tab:** `for_each: layers` builds one tab per element of a named
+list a target resolved (there is no list-producing target kind yet — see the
+tracking issue), rather than the tab appearing once:
+
+```yaml
+tabs:
+  - for_each: layers          # a name, not a template expression
+    as: layer                 # defaults to for_each's own name
+    name: "L{{.layer_layer}} #{{.layer_pr}}"
+    cwd: "{{.layer_worktree}}"
+    panes:
+      - label: "l{{.layer_layer}}-claude"
+        agent: claude
+        submit: true
+        prompt: "Review PR #{{.layer_pr}} at {{.layer_head_sha}}"
+```
+
+Each element's fields render flat, as `<as>_<key>` — `{{.layer_pr}}`, never
+`{{.layer.pr}}` — because the prompt/cwd/env template dialect is one plain
+`map[string]string` everywhere in this plugin, and nesting would need a richer
+value type just for this one feature. `<as>_index` is also set, 1-based. An
+element's own field wins if it happens to be named `index`.
+
+An empty list is not an error and builds zero tabs; a `for_each` naming a list
+the target never provided is — before any pane exists, not partway through
+building the layout. `focus: true` inside a `for_each` tab is rejected at
+`Validate()` time, since every repetition would set it and only the last one
+built would win.
+
+This is the plugin's one loop, deliberately: no `when:`, no conditionals, no
+nested `for_each`. Anything that needs actual logic is a `command:` pane.
+
 Narrow which targets a setup offers itself for with `applies_to`, `repos`
 (globs over `owner/repo`), and `branches` (globs). Valid `applies_to` kinds:
 `github_pr`, `github_issue`, `github_repo`, `linear`, `plain`, `project`.
@@ -587,7 +643,7 @@ internal/gh/           PR lookup, shelling out to the gh CLI
 internal/gitcmd/       branches, the default branch, and fetching; shelling out to git
 internal/open/         the new-Space decision, behind interfaces for the same reason
 internal/discovery/    finding checkouts under the configured roots; filesystem only
-internal/setup/        the YAML recipes: load, match, and resolve into ordered steps
+internal/setup/        setup recipes: load, match, and resolve into ordered steps
 internal/session/      the picker's decision: focus what exists, create what does not
 internal/ui/           the popups, built on internal/open and internal/session
 skills/                Claude Code skills, installable with npx skills add

@@ -6,6 +6,53 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.7.0 — 2026-08-03
+
+A setup can repeat a tab, a `command:` pane is told where it is, and `--help`
+stops building a Space called `--help`.
+
+- `open --help` and `project --help` built a real Space from the literal flag
+  text. Both functions took `args[0]` as their input before looking at it, and
+  their flag loops started at the second argument, so the flag was never seen.
+  Both now print that subcommand's usage and exit 0, as do `setups --help` and
+  `handoff --help`. The bare word `help` is deliberately still an input:
+  `open`'s argument is arbitrary text, and a checkout can be named anything.
+- `for_each:` repeats a tab once per element of a **named list**, which is the
+  first thing a setup could not express at all -- `applies_to` renders against
+  exactly one target, so a layout whose tab count is unknown until discovery
+  runs had to be a script that gave up `--dry-run`, validation and step
+  reporting to get it.
+- The list is a name resolved outside the template layer, never a template
+  expression: values stay strings all the way down, so `Render` and
+  `missingkey=zero` are untouched. Elements render flat, as `{{.layer_pr}}`
+  rather than `{{.layer.pr}}` -- uglier, and a far smaller blast radius than
+  the `map[string]any` nesting would need. `{{.<as>_index}}` is 1-based.
+- A missing list fails before a single pane exists; an empty one builds zero
+  tabs and moves on. `focus: true` inside a repeated tab is rejected, since
+  every repetition would set it and only the last built would quietly win.
+- No target kind produces a list yet, so every `for_each` currently fails
+  naming what was available. The shape, the validation and the errors are what
+  landed; the discovery that fills it is its own piece of work.
+- This is the one loop, deliberately. A second control-flow feature would make
+  this a programming language written in YAML, and that is the signal to add a
+  real language as a second front end instead. `internal/setup`'s package
+  comment records what that would need, and a test pins it.
+- Tab names, pane labels and every `cwd` now render as templates too -- they
+  had to, for a repeated tab to differ from itself.
+- A `command:` pane is typed with `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`,
+  `HERDR_PANE_ID` and one `HERDR_PANE_<LABEL>` per labelled pane in the setup,
+  so a script no longer polls `pane list` to find itself or the agent pane the
+  file declared beside it. The label stops being an undeclared contract that
+  fails silently when renamed.
+- These ride in as a shell assignment prefix rather than through `env:`,
+  because they have to: Herdr sets a pane's environment at creation, and a
+  pane's own id does not exist until it has been created. The prefix scopes to
+  one simple command -- `cd x && ./script` does not carry them past `cd` --
+  which is documented rather than papered over, since `export` is spelled
+  differently in fish than in POSIX shells.
+- `--dry-run` names which of those variables a command pane will get, and
+  never invents the ids, which do not exist until something is built.
+
 ## 0.6.0 — 2026-07-29
 
 A Linear ticket finds its own repository, and the checkouts are offered to the

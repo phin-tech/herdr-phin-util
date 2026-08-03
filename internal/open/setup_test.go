@@ -22,8 +22,13 @@ type fakeLayout struct {
 
 	createTabErr error
 	splitErr     error
-	runErr       error
-	promptErr    error
+	// splitErrAtCall fails only the Nth SplitPane call (1-based), succeeding
+	// on every other one -- how a test expresses "this one split failed, but
+	// the layout otherwise built fine" rather than every split failing alike.
+	splitErrAtCall int
+	splitCalls     int
+	runErr         error
+	promptErr      error
 	// promptErrUntilCall makes PromptAgent fail for every call before this
 	// one, which is how a prompt that lands only on the retry is expressed.
 	promptErrUntilCall int
@@ -48,8 +53,12 @@ func (f *fakeLayout) CreateTab(workspaceID, cwd, label string, env map[string]st
 
 func (f *fakeLayout) SplitPane(target, direction string, ratio float64, cwd string, env map[string]string, focus bool) (herdr.Pane, error) {
 	f.calls = append(f.calls, fmt.Sprintf("split %s %s ratio=%v cwd=%s env=%v", target, direction, ratio, cwd, env))
+	f.splitCalls++
 	if f.splitErr != nil {
 		return herdr.Pane{}, f.splitErr
+	}
+	if f.splitErrAtCall != 0 && f.splitCalls == f.splitErrAtCall {
+		return herdr.Pane{}, errors.New("no room")
 	}
 	return f.pane(), nil
 }
@@ -134,7 +143,7 @@ func TestApplySetupBuildsTheWholeLayout(t *testing.T) {
 		"split root right",
 		"ratio=0.25",
 		"tab shell",
-		"run p2 roborev review-branch",
+		"run p2 HERDR_PANE_ID='p2' HERDR_PANE_ORCHESTRATOR='root' HERDR_TAB_ID='root-tab' HERDR_WORKSPACE_ID='w1' roborev review-branch",
 		"prompt p1 /code-review",
 	} {
 		if !strings.Contains(got, want) {
@@ -400,7 +409,7 @@ func TestApplySetupSkipsTheRestOfATabItCouldNotCreate(t *testing.T) {
 	}
 
 	got := l.transcript()
-	if !strings.Contains(got, "run root one") {
+	if !strings.Contains(got, "run root HERDR_PANE_ID='root' HERDR_TAB_ID='root-tab' HERDR_WORKSPACE_ID='w1' one") {
 		t.Errorf("the tab before the failure did not run:\n%s", got)
 	}
 	if strings.Contains(got, "three") {
@@ -736,6 +745,219 @@ func TestWorktreeFallbackToAnExistingWorktreeIsReportedGently(t *testing.T) {
 	}
 	if strings.Contains(out.Warnings[0], repo) {
 		t.Errorf("warning claims the source checkout: %q", out.Warnings[0])
+	}
+}
+
+// A command pane's typed line carries its own workspace/tab/pane ids -- #9's
+// core ask -- so a `command:` pane never has to poll `herdr pane list` to
+// find itself.
+func TestFillPanePrefixesACommandWithItsOwnIds(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.transcript()
+	want := "run root HERDR_PANE_ID='root' HERDR_TAB_ID='root-tab' HERDR_WORKSPACE_ID='w2H' ./discover.py"
+	if !strings.Contains(got, want) {
+		t.Errorf("transcript missing %q:\n%s", want, got)
+	}
+}
+
+// A labelled sibling pane -- anywhere in the plan, not just the same tab --
+// becomes HERDR_PANE_<FOLDED LABEL> in a command pane's environment, which is
+// the polling loop issue #9 exists to remove.
+func TestFillPaneAddsALabelledSiblingAsAnHerdrPaneVariable(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Label: "meta-orchestrator", Agent: "claude"},
+		{Split: "down", Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.transcript()
+	// The first pane of the first tab reuses the Space's own root pane, so the
+	// labelled agent -- pane 0 -- is "root"; the split after it is the first
+	// pane fakeLayout actually creates, "p1".
+	if !strings.Contains(got, "HERDR_PANE_META_ORCHESTRATOR='root'") {
+		t.Errorf("transcript missing the sibling's env var:\n%s", got)
+	}
+}
+
+// Label folding: punctuation and spaces fold to a single underscore, a label
+// that folds to nothing (pure punctuation) is skipped rather than emitting a
+// broken variable name, and so is one that would start with a digit.
+func TestFillPaneFoldsLabelsIntoEnvNamesAndSkipsIllegalOnes(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Label: "Worker #2!", Agent: "claude"},
+		{Split: "down", Label: "!!!", Agent: "codex"},
+		{Split: "down", Label: "2fast", Agent: "codex"},
+		{Split: "down", Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.transcript()
+	// "Worker #2!" is pane 0, which reuses the Space's own root pane.
+	if !strings.Contains(got, "HERDR_PANE_WORKER_2='root'") {
+		t.Errorf("transcript missing the folded label's env var:\n%s", got)
+	}
+	if strings.Contains(got, "HERDR_PANE_2FAST") || strings.Contains(got, "=''") {
+		t.Errorf("an illegal folded name leaked into the command:\n%s", got)
+	}
+	// Only one HERDR_PANE_ var beyond the reserved HERDR_PANE_ID: the other
+	// two labels ("!!!"  and "2fast") fold to nothing usable.
+	if n := strings.Count(got, "HERDR_PANE_"); n != 2 {
+		t.Errorf("HERDR_PANE_ count = %d, want 2 (the reserved id and the one legal label):\n%s", n, got)
+	}
+}
+
+// Two labels that fold to the same name resolve deterministically: the first
+// one in plan order wins, and the second is silently dropped rather than
+// left to whichever order a map iteration produced.
+func TestFillPaneResolvesAFoldedLabelCollisionByPlanOrder(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Label: "meta orchestrator", Agent: "claude"},
+		{Split: "down", Label: "META-ORCHESTRATOR", Agent: "codex"},
+		{Split: "down", Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.transcript()
+	// "meta orchestrator" is pane 0 (the Space's own root pane, reused); the
+	// colliding "META-ORCHESTRATOR" is the split after it, "p1" -- and must
+	// lose.
+	if !strings.Contains(got, "HERDR_PANE_META_ORCHESTRATOR='root'") {
+		t.Errorf("transcript does not show the first-in-plan-order pane winning:\n%s", got)
+	}
+	if strings.Contains(got, "HERDR_PANE_META_ORCHESTRATOR='p1'") {
+		t.Errorf("the later label overwrote the earlier one instead of losing the collision:\n%s", got)
+	}
+}
+
+// A label folding to "ID" would collide with the step's own reserved
+// HERDR_PANE_ID -- that reserved key must win, never be displaced by a
+// labelled sibling that happens to fold onto it.
+func TestFillPaneReservesHerdrPaneIDAgainstACollidingLabel(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Label: "id", Agent: "claude"},
+		{Split: "down", Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.transcript()
+	// The label "id" is pane 0, "root"; the command pane -- pane 1, split
+	// down -- is "p1". HERDR_PANE_ID must stay the command's own id, "p1",
+	// not be displaced by the sibling whose label folds onto the same name.
+	if !strings.Contains(got, "HERDR_PANE_ID='p1'") {
+		t.Errorf("the command pane's own id was not the winner of HERDR_PANE_ID:\n%s", got)
+	}
+	if strings.Contains(got, "HERDR_PANE_ID='root'") {
+		t.Errorf("the colliding label displaced the reserved HERDR_PANE_ID:\n%s", got)
+	}
+}
+
+// An agent pane's prompt is never prefixed: the issue explicitly has no use
+// for these vars on an agent (it can run `herdr pane current` itself), and a
+// prompt is not a shell command to prefix an assignment onto.
+func TestFillPaneDoesNotPrefixAnAgentPrompt(t *testing.T) {
+	s := &fakeSession{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "review", Panes: []setup.Pane{
+		{Agent: "claude", Prompt: "review this"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: s, Layout: &fakeLayout{}}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.sendTextCalls) != 1 || s.sendTextCalls[0].text != "review this" {
+		t.Errorf("send_text calls = %+v, want the prompt untouched", s.sendTextCalls)
+	}
+}
+
+// A pane whose creation failed contributes no HERDR_PANE_* variable to
+// anything else in the plan: there is no pane id to hand out. The failure is
+// made to land on exactly one split (via splitErrAtCall), so a second split
+// after it can still succeed and be checked for what it did not receive.
+func TestFillPaneOmitsAFailedPaneFromSiblingEnv(t *testing.T) {
+	l := &fakeLayout{splitErrAtCall: 1}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Label: "orchestrator", Agent: "claude"},
+		{Split: "down", Label: "worker", Agent: "codex"},
+		{Split: "down", Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(l.transcript(), "HERDR_PANE_WORKER") {
+		t.Errorf("a var was emitted for a pane that never got built:\n%s", l.transcript())
+	}
+	// The command pane itself still built and ran (off the pane before the
+	// failed split, since a failed split leaves prev untouched), which is
+	// what makes the absence above meaningful rather than the whole tab
+	// having been abandoned.
+	if !strings.Contains(l.transcript(), "./discover.py") {
+		t.Fatalf("the command pane after the failed split never ran:\n%s", l.transcript())
+	}
+}
+
+// The typed prefix's keys are always sorted, so a run is reproducible and
+// RunCommand's echo probe -- which matches a short leading fragment of
+// whatever was actually typed -- sees the same fragment every time.
+func TestFillPaneEmitsHerdrKeysInSortedOrder(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Label: "meta-orchestrator", Agent: "claude"},
+		{Split: "down", Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.transcript()
+	// Pane 0 ("meta-orchestrator") reuses the root pane; the command split
+	// after it is "p1". Alphabetically: HERDR_PANE_ID, then
+	// HERDR_PANE_META_ORCHESTRATOR ('I' < 'M'), then HERDR_TAB_ID ('P' <
+	// 'T'), then HERDR_WORKSPACE_ID ('T' < 'W').
+	want := "HERDR_PANE_ID='p1' HERDR_PANE_META_ORCHESTRATOR='root' HERDR_TAB_ID='root-tab' HERDR_WORKSPACE_ID='w2H' ./discover.py"
+	if !strings.Contains(got, want) {
+		t.Errorf("keys were not emitted sorted:\n%s\nwant substring:\n%s", got, want)
+	}
+}
+
+// Values are single-quoted, the one quoting form sh, bash, zsh and fish all
+// agree on -- an id containing a character that would otherwise need
+// escaping still comes through as one shell word.
+func TestFillPaneQuotesHerdrValues(t *testing.T) {
+	l := &fakeLayout{}
+	def := setup.Setup{Name: "x", Tabs: []setup.Tab{{Name: "a", Panes: []setup.Pane{
+		{Command: "./discover.py"},
+	}}}}
+
+	if _, _, _, err := applySetup(Deps{Session: &fakeSession{}, Layout: l}, &config.Settings{}, def, rootPane(), "w2H", "/repo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(l.transcript(), "HERDR_WORKSPACE_ID='w2H'") {
+		t.Errorf("value was not single-quoted:\n%s", l.transcript())
 	}
 }
 

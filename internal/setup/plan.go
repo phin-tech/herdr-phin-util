@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -53,75 +54,146 @@ type Plan struct {
 	FocusStep int
 }
 
+// Data is what a setup renders against. Vars is exactly today's promptData --
+// one flat map[string]string, unchanged, so every existing call site and
+// every existing template keeps meaning what it always meant. Lists is the
+// second channel a for_each tab reads from: a name such as "layers" mapped to
+// one map[string]string per element, each of which becomes one repetition of
+// the tab that named it.
+//
+// Lists is a separate field rather than folded into Vars because nothing
+// iterable can pass through a text/template placeholder without Render
+// itself changing -- see the comment on Tab.ForEach for why that would cost
+// more than it is worth. A second field costs nothing: most setups never set
+// for_each and never look at it.
+type Data struct {
+	Vars  map[string]string
+	Lists map[string][]map[string]string
+}
+
 // Resolve renders a setup against the target data and the Space's directory.
 //
 // data is the same map internal/open builds for an [agent.prompts] template,
-// so {{.Number}} and {{.Branch}} mean here exactly what they mean there.
+// so {{.Number}} and {{.Branch}} mean here exactly what they mean there. This
+// signature is kept exactly as it has always been -- rather than folded into
+// ResolveData -- so that for_each's arrival does not ripple into every file
+// that calls Resolve and will never write a for_each tab of its own.
 func (s Setup) Resolve(baseCwd string, data map[string]string) (Plan, error) {
+	return s.ResolveData(baseCwd, Data{Vars: data})
+}
+
+// ResolveData is Resolve with the second data channel a for_each tab needs.
+//
+// The list a for_each tab names resolves before a single pane of that tab is
+// built -- tabIterations runs at the top of each pass through s.Tabs, ahead of
+// any Step being appended -- which is the invariant the issue asked for: a
+// missing or misspelled list fails with nothing half-built. That in turn only
+// matters because of where this is called from: applySetup calls Resolve
+// before it has touched Herdr at all, so a plan that never resolves never
+// reaches buildPanes either. Nothing extra had to be added to get that; it
+// falls out of Resolve already running first.
+func (s Setup) ResolveData(baseCwd string, data Data) (Plan, error) {
 	plan := Plan{Name: s.Name}
 
-	setupCwd := joinCwd(baseCwd, s.Cwd)
-	setupEnv, err := renderEnv(s.Env, data)
+	setupCwd, err := renderedCwd(baseCwd, s.Cwd, data.Vars)
+	if err != nil {
+		return Plan{}, fmt.Errorf("setup cwd: %w", err)
+	}
+	setupEnv, err := renderEnv(s.Env, data.Vars)
 	if err != nil {
 		return Plan{}, fmt.Errorf("setup env: %w", err)
 	}
 
 	focus := -1
+	// emitted counts tabs actually built, not tabs the file listed -- the two
+	// disagree the moment a for_each tab expands to something other than
+	// exactly one. Step.Tab, NewTab and FirstTab all have to be about the
+	// emitted tab: buildPanes decides "reuse the Space's own tab" from
+	// FirstTab and "create a new one" from NewTab, and neither of those
+	// questions has anything to do with which line of YAML asked for it. One
+	// consequence worth calling out: a for_each over an empty list in the
+	// first slot of a setup means the *next* tab is the one that becomes
+	// FirstTab and reuses the Space's own tab -- correctly, since the empty
+	// for_each built nothing for the Space to have already become.
+	emitted := 0
 	for ti, tab := range s.Tabs {
-		tabCwd := joinCwd(setupCwd, tab.Cwd)
-		tabEnv, err := renderEnv(tab.Env, data)
+		iterations, err := tabIterations(ti, tab, data)
 		if err != nil {
-			return Plan{}, fmt.Errorf("tab %d env: %w", ti+1, err)
+			return Plan{}, err
 		}
-		tabEnv = mergeEnv(setupEnv, tabEnv)
 
-		for pi, pane := range tab.EffectivePanes() {
-			paneEnv, err := renderEnv(pane.Env, data)
+		for _, vars := range iterations {
+			tabName, err := Render(tab.Name, vars)
 			if err != nil {
-				return Plan{}, fmt.Errorf("tab %d pane %d env: %w", ti+1, pi+1, err)
+				return Plan{}, fmt.Errorf("tab %d name: %w", ti+1, err)
 			}
+			tabCwd, err := renderedCwd(setupCwd, tab.Cwd, vars)
+			if err != nil {
+				return Plan{}, fmt.Errorf("tab %d cwd: %w", ti+1, err)
+			}
+			tabEnv, err := renderEnv(tab.Env, vars)
+			if err != nil {
+				return Plan{}, fmt.Errorf("tab %d env: %w", ti+1, err)
+			}
+			tabEnv = mergeEnv(setupEnv, tabEnv)
 
-			prompt, err := renderPanePrompt(pane, data)
-			if err != nil {
-				return Plan{}, fmt.Errorf("tab %d pane %d prompt: %w", ti+1, pi+1, err)
-			}
-			command, err := Render(pane.Command, data)
-			if err != nil {
-				return Plan{}, fmt.Errorf("tab %d pane %d command: %w", ti+1, pi+1, err)
-			}
-			args, err := renderAgentArgs(pane, data)
-			if err != nil {
-				return Plan{}, fmt.Errorf("tab %d pane %d args: %w", ti+1, pi+1, err)
-			}
+			for pi, pane := range tab.EffectivePanes() {
+				label, err := Render(pane.Label, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d pane %d label: %w", ti+1, pi+1, err)
+				}
+				paneEnv, err := renderEnv(pane.Env, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d pane %d env: %w", ti+1, pi+1, err)
+				}
 
-			split := pane.Split
-			if pi > 0 && split == "" {
-				split = DefaultSplit
-			}
+				prompt, err := renderPanePrompt(pane, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d pane %d prompt: %w", ti+1, pi+1, err)
+				}
+				command, err := Render(pane.Command, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d pane %d command: %w", ti+1, pi+1, err)
+				}
+				args, err := renderAgentArgs(pane, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d pane %d args: %w", ti+1, pi+1, err)
+				}
+				paneCwd, err := renderedCwd(tabCwd, pane.Cwd, vars)
+				if err != nil {
+					return Plan{}, fmt.Errorf("tab %d pane %d cwd: %w", ti+1, pi+1, err)
+				}
 
-			step := Step{
-				Tab:      ti,
-				TabName:  tab.Name,
-				NewTab:   pi == 0 && ti > 0,
-				FirstTab: ti == 0,
-				PaneIdx:  pi,
-				Label:    pane.Label,
-				Split:    split,
-				Ratio:    pane.Ratio,
-				Cwd:      joinCwd(tabCwd, pane.Cwd),
-				Env:      mergeEnv(tabEnv, paneEnv),
-				Agent:    pane.Agent,
-				Args:     args,
-				Prompt:   prompt,
-				Submit:   pane.Submit,
-				Command:  strings.TrimSpace(command),
-				Focus:    pane.Focus,
-				WaitFor:  normaliseWait(pane.WaitFor),
+				split := pane.Split
+				if pi > 0 && split == "" {
+					split = DefaultSplit
+				}
+
+				step := Step{
+					Tab:      emitted,
+					TabName:  tabName,
+					NewTab:   pi == 0 && emitted > 0,
+					FirstTab: emitted == 0,
+					PaneIdx:  pi,
+					Label:    label,
+					Split:    split,
+					Ratio:    pane.Ratio,
+					Cwd:      paneCwd,
+					Env:      mergeEnv(tabEnv, paneEnv),
+					Agent:    pane.Agent,
+					Args:     args,
+					Prompt:   prompt,
+					Submit:   pane.Submit,
+					Command:  strings.TrimSpace(command),
+					Focus:    pane.Focus,
+					WaitFor:  normaliseWait(pane.WaitFor),
+				}
+				if pane.Focus && focus < 0 {
+					focus = len(plan.Steps)
+				}
+				plan.Steps = append(plan.Steps, step)
 			}
-			if pane.Focus && focus < 0 {
-				focus = len(plan.Steps)
-			}
-			plan.Steps = append(plan.Steps, step)
+			emitted++
 		}
 	}
 
@@ -130,6 +202,83 @@ func (s Setup) Resolve(baseCwd string, data map[string]string) (Plan, error) {
 	}
 	plan.FocusStep = focus
 	return plan, nil
+}
+
+// tabIterations resolves how many times a tab is built and what each build
+// renders against. A tab with no for_each is the one iteration every setup
+// has always had -- data.Vars, untouched, so a setup that never uses for_each
+// resolves exactly as it did before this existed.
+//
+// A for_each tab looks data.Lists[name] up. Absent is an error: this is the
+// one place cardinality can go wrong before anything is built, and a typo'd
+// list name failing silently (zero tabs, no complaint) would be far worse to
+// track down than failing loudly here. Present but empty is not an error --
+// zero elements is a legitimate answer from a live target (a stack of one
+// layer has no "the rest of the stack") and yields zero tabs for this source
+// tab, which is exactly what the emitted-tab counter in ResolveData is built
+// to cope with.
+func tabIterations(ti int, tab Tab, data Data) ([]map[string]string, error) {
+	name := strings.TrimSpace(tab.ForEach)
+	if name == "" {
+		return []map[string]string{data.Vars}, nil
+	}
+
+	list, ok := data.Lists[name]
+	if !ok {
+		return nil, missingListErr(ti, name, data.Lists)
+	}
+
+	as := strings.TrimSpace(tab.As)
+	if as == "" {
+		as = name
+	}
+
+	out := make([]map[string]string, 0, len(list))
+	for i, elem := range list {
+		vars := make(map[string]string, len(data.Vars)+len(elem)+1)
+		for k, v := range data.Vars {
+			vars[k] = v
+		}
+		// _index goes in before the element's own keys, not after: an
+		// element field named "index" is vanishingly unlikely, but if a list
+		// source ever has one, the data it actually carries should win over
+		// the bookkeeping this function bolted on, not the other way round.
+		vars[as+"_index"] = strconv.Itoa(i + 1)
+		for k, v := range elem {
+			vars[as+"_"+k] = v
+		}
+		out = append(out, vars)
+	}
+	return out, nil
+}
+
+// missingListErr names, sorted, what lists the target did provide -- sorted
+// so the message a user sees is the same every run rather than whichever
+// order a map iteration happened to produce. An empty roster gets its own
+// wording rather than "provides: " trailing off into nothing.
+func missingListErr(ti int, name string, lists map[string][]map[string]string) error {
+	if len(lists) == 0 {
+		return fmt.Errorf("tab %d: for_each names %q, but this target provides no lists", ti+1, name)
+	}
+	names := make([]string, 0, len(lists))
+	for k := range lists {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("tab %d: for_each names %q, but this target only provides %s", ti+1, name, strings.Join(names, ", "))
+}
+
+// renderedCwd renders a cwd against this iteration's vars before resolving it
+// against the level above it. Templating a cwd at all is new: nothing needed
+// it before a for_each tab's cwd could contain {{.layer_worktree}}, so a
+// setup with no for_each and no "{{" in a cwd anywhere renders byte-identical
+// to what joinCwd alone produced.
+func renderedCwd(base, rel string, vars map[string]string) (string, error) {
+	rendered, err := Render(rel, vars)
+	if err != nil {
+		return "", err
+	}
+	return joinCwd(base, rendered), nil
 }
 
 // renderPanePrompt turns whichever of prompt/skill was given into the text to
@@ -274,11 +423,83 @@ func Render(text string, data map[string]string) (string, error) {
 	return buf.String(), nil
 }
 
+// FoldLabel turns a pane label into the suffix of the HERDR_PANE_<NAME>
+// environment variable execution injects for it (see the long comment on
+// herdrEnvPrefix in internal/open/setup.go for the mechanism): upper-cased,
+// with each run of characters that are not ASCII letters or digits folded to
+// one "_", and any leading or trailing "_" trimmed. ok is false when that
+// leaves nothing (a label that is pure punctuation) or leaves a name starting
+// with a digit -- neither survives as a shell variable name, so a label like
+// that gets no HERDR_PANE_ variable rather than a broken one.
+//
+// This lives here, not in internal/open, so Describe (which only has the
+// plan, never a built pane) and the real run (which has both) fold a label
+// identically. If they used separate logic, a --dry-run preview of which
+// HERDR_PANE_ names will exist could disagree with what actually gets set --
+// exactly the kind of preview-vs-reality gap this package exists to prevent.
+func FoldLabel(label string) (string, bool) {
+	var b strings.Builder
+	sep := false
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 'a' + 'A')
+			sep = false
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			sep = false
+		default:
+			if !sep {
+				b.WriteByte('_')
+				sep = true
+			}
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if name == "" || (name[0] >= '0' && name[0] <= '9') {
+		return "", false
+	}
+	return name, true
+}
+
+// herdrEnvNames lists the names (never the values -- those don't exist until
+// the plan is really built) of the Herdr identity variables a command step's
+// environment will carry: its own three ids, then one HERDR_PANE_<NAME> per
+// labelled pane anywhere in the plan whose label folds to something legal,
+// first occurrence in plan order winning a collision. That order matches
+// execution's own first-wins rule exactly (see herdrPaneEnv in
+// internal/open/setup.go) so a name --dry-run lists is never one the real run
+// would have skipped or overwritten differently.
+//
+// "ID" is pre-seeded into seen because a label that folds to it would collide
+// with HERDR_PANE_ID -- the step's own pane id, always present -- which must
+// win rather than being quietly replaced by whichever labelled pane happened
+// to fold onto the same name.
+func (p Plan) herdrEnvNames() []string {
+	names := []string{"HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"}
+	seen := map[string]bool{"ID": true}
+	for _, step := range p.Steps {
+		if step.Label == "" {
+			continue
+		}
+		name, ok := FoldLabel(step.Label)
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, "HERDR_PANE_"+name)
+	}
+	return names
+}
+
 // Describe renders a plan as the lines --dry-run prints: one per pane, in the
 // order they will be built, with what each will be given.
 func (p Plan) Describe() []string {
 	var out []string
 	tab := -1
+	// Computed once: which HERDR_PANE_* names exist depends only on which
+	// labels the plan has, the same set for every command step in it.
+	envNames := p.herdrEnvNames()
 	for _, s := range p.Steps {
 		if s.Tab != tab {
 			tab = s.Tab
@@ -313,6 +534,13 @@ func (p Plan) Describe() []string {
 		}
 		if s.Command != "" {
 			out = append(out, "    run     "+s.Command)
+			// The ids themselves are not knowable here -- a pane's own id does
+			// not exist until Herdr creates it, and this is a preview of a
+			// plan that has not touched Herdr at all -- so this states which
+			// variables land, not what they will hold. See herdrEnvNames.
+			if len(envNames) > 0 {
+				out = append(out, "    herdr    "+strings.Join(envNames, ", "))
+			}
 		}
 		if s.Agent != "" {
 			out = append(out, "    agent   "+s.Agent)
