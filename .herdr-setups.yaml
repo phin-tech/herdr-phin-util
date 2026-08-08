@@ -14,3 +14,16 @@ setups:
               fix whatever fails. Do not commit.
           - split: right
             command: go test ./... && go vet ./...
+
+  - name: sandboxed-python
+    description: try the secure-python nono profile — a Claude Code pane sandboxed by it, and a bare python3 REPL beside it
+    applies_to: [plain, project]
+    tabs:
+      - name: sandboxed
+        panes:
+          - label: claude-sandboxed
+            focus: true
+            command: nono run --profile .nono/secure-python.json --extends claude-code --allow-cwd -- claude
+          - split: right
+            label: python
+            command: nono run --profile .nono/secure-python.json --allow-cwd -- python3

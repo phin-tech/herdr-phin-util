@@ -530,7 +530,15 @@ func createOrOpenWorktreeInner(s Session, req herdr.WorktreeRequest) (herdr.Pane
 	}
 	createErr := err
 
-	pane, workspaceID, err = s.OpenWorktree(req)
+	// req.Path, if set, is this tool's own guess at where the worktree would
+	// land -- from the config template, resolved before Herdr was asked
+	// anything. Creation failing means that guess was wrong (something is
+	// already there), so the retry asks by branch and lets Herdr find the
+	// real thing rather than opening whatever happens to be at the guess.
+	openReq := req
+	openReq.Path = ""
+
+	pane, workspaceID, err = s.OpenWorktree(openReq)
 	if err != nil {
 		return herdr.Pane{}, "", nil, fmt.Errorf("create worktree: %w; open worktree: %v", createErr, err)
 	}

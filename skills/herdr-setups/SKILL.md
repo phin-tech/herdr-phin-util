@@ -167,6 +167,31 @@ is a request, and the diff under review can argue with it. `--permission-mode
 plan` (claude) or `--sandbox read-only` (codex) cannot be argued with. If a
 pane must not mutate the repo, put it here, not in the prompt.
 
+### Sandboxing a `command:` pane
+
+Herdr resolves an `agent:` pane's binary itself (kind → executable), so
+`args:` can only add flags — there's no hook here to wrap the agent process in
+an external sandbox like [nono](https://nono.sh). A `command:` pane has no
+such indirection: it's a literal string typed into a plain shell, so wrapping
+it is just text.
+
+```yaml
+- label: python
+  command: nono run --profile .nono/secure-python.json --allow-cwd -- python3
+```
+
+**Use `nono run`, not `nono wrap`.** Domain/network filtering runs a proxy in
+an unsandboxed supervisor process; `wrap` execs directly with no supervisor,
+so that proxy — and every network restriction in the profile — silently never
+starts. Filesystem and credential rules still work under `wrap` (pure
+kernel-level Seatbelt/Landlock, no proxy needed); only network filtering needs
+`run`.
+
+Commit the profile JSON alongside `.herdr-setups.yaml` (e.g. under `.nono/`)
+and reference it by the relative path — it travels to every worktree the same
+way the setup file does. `nono profile validate <path>` checks it without
+running anything. This repo's `sandboxed-python` setup is a working example.
+
 ### submit
 
 `submit: true` sends the prompt with Enter. **Omitted means type it and leave

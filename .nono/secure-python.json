@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "name": "secure-python",
+    "version": "1.0.0",
+    "description": "Locked-down profile for Python development: workdir-scoped filesystem, PyPI-only network egress, no credentials, no destructive commands.",
+    "author": "herdr-phin-util"
+  },
+  "extends": "python-dev",
+  "groups": {
+    "include": ["unlink_protection"]
+  },
+  "workdir": {
+    "access": "readwrite"
+  },
+  "network": {
+    "network_profile": null,
+    "allow_domain": ["pypi.org", "files.pythonhosted.org"]
+  }
+}

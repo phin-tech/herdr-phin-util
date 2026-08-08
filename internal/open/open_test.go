@@ -682,6 +682,38 @@ func TestRunWorktreePathOverrideAppliesToCreateWorktree(t *testing.T) {
 	}
 }
 
+// worktree.create failing means this tool's own guessed Path (from the
+// config template, resolved before Herdr was asked anything) was wrong --
+// something else is already there. The retry must ask worktree.open by
+// branch, not by the same guess: a wrong path could land on some unrelated
+// directory instead of the worktree that actually exists.
+func TestWorktreeCreateFailureFallsBackToOpenByBranchNotGuessedPath(t *testing.T) {
+	_, cfg := existingRepo(t)
+	cfg.WorktreePath = "{repo_root}/.worktrees/{branch}"
+	cfg.Agent.Enabled = false
+	sess := &fakeSession{
+		createWorktreeErr: errors.New("worktree already exists"),
+		pane:              herdr.Pane{PaneID: "p1"},
+		workspaceID:       "w1",
+	}
+	prs := &fakePRLookup{info: gh.PRInfo{Branch: "fix-thing", Title: "t"}}
+
+	_, err := Run(Deps{Session: sess, PRs: prs, Git: &fakeFetcher{}}, cfg,
+		"https://github.com/phin-tech/herdr-phin-util/pull/1", Options{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(sess.openWorktreeCalls) != 1 {
+		t.Fatalf("openWorktreeCalls = %d, want 1", len(sess.openWorktreeCalls))
+	}
+	if got := sess.openWorktreeCalls[0].Path; got != "" {
+		t.Errorf("OpenWorktree called with guessed Path %q, want empty so it opens by branch", got)
+	}
+	if got := sess.openWorktreeCalls[0].Branch; got != "fix-thing" {
+		t.Errorf("OpenWorktree Branch = %q, want fix-thing", got)
+	}
+}
+
 // --- prompt rendering ---
 
 func TestRenderPromptMissingFieldDoesNotError(t *testing.T) {

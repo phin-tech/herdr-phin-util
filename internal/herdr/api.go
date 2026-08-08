@@ -222,12 +222,35 @@ func (c *Client) CreateWorktree(req WorktreeRequest) (Pane, string, error) {
 	return res.RootPane, res.Workspace.WorkspaceID, nil
 }
 
+// openParams builds worktree.open's params.
+//
+// Unlike worktree.create, worktree.open rejects a request carrying both path
+// and branch -- it wants exactly one. A caller with a known on-disk path
+// (Existing worktrees, or any request where [worktrees].path resolved one)
+// sets both fields on WorktreeRequest for CreateWorktree's benefit, so this
+// picks path over branch rather than reusing params() verbatim.
+func (r WorktreeRequest) openParams() map[string]any {
+	p := map[string]any{
+		"cwd":   r.Cwd,
+		"focus": r.Focus,
+	}
+	if r.Path != "" {
+		p["path"] = r.Path
+	} else {
+		p["branch"] = r.Branch
+	}
+	if r.Label != "" {
+		p["label"] = r.Label
+	}
+	return p
+}
+
 // OpenWorktree opens a worktree that already exists on disk, or focuses it if
 // it is already open. Use this once CreateWorktree has reported the branch is
 // already checked out elsewhere.
 func (c *Client) OpenWorktree(req WorktreeRequest) (Pane, string, error) {
 	var res createResult
-	if err := c.Request("worktree.open", req.params(), &res); err != nil {
+	if err := c.Request("worktree.open", req.openParams(), &res); err != nil {
 		return Pane{}, "", err
 	}
 	return res.RootPane, res.Workspace.WorkspaceID, nil
