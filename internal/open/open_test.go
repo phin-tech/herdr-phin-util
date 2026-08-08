@@ -714,6 +714,62 @@ func TestWorktreeCreateFailureFallsBackToOpenByBranchNotGuessedPath(t *testing.T
 	}
 }
 
+// A worktree directory removed by hand (rm -rf instead of `git worktree
+// remove`) leaves git's bookkeeping pointing at a branch that create thinks
+// is already checked out and open can't find anywhere. Both calls fail, and
+// the message should name the fix (git worktree prune) rather than
+// concatenating two RPC failures that read as unrelated.
+func TestWorktreeCreateAndOpenBothFailingWithNotFoundNamesPrune(t *testing.T) {
+	_, cfg := existingRepo(t)
+	cfg.Agent.Enabled = false
+	sess := &fakeSession{
+		createWorktreeErr: errors.New("'fix-thing' is already used by worktree at '/gone'"),
+		openWorktreeErr:   &herdr.APIError{Method: "worktree.open", Code: "worktree_not_found", Message: "worktree branch not found"},
+	}
+	prs := &fakePRLookup{info: gh.PRInfo{Branch: "fix-thing", Title: "t"}}
+
+	_, err := Run(Deps{Session: sess, PRs: prs, Git: &fakeFetcher{}}, cfg,
+		"https://github.com/phin-tech/herdr-phin-util/pull/1", Options{})
+	if err == nil {
+		t.Fatal("Run: want an error, got nil")
+	}
+	for _, want := range []string{"fix-thing", "git worktree prune"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	if strings.Contains(err.Error(), "open worktree:") {
+		t.Errorf("error %q still reads as the raw double-RPC failure", err.Error())
+	}
+}
+
+// A create/open failure that is NOT the not-found case must keep the original
+// two-error message -- isWorktreeNotFound has to be a narrow match, not a
+// catch-all that hides genuinely different failures behind the prune advice.
+func TestWorktreeCreateAndOpenBothFailingWithOtherErrorKeepsBothMessages(t *testing.T) {
+	_, cfg := existingRepo(t)
+	cfg.Agent.Enabled = false
+	sess := &fakeSession{
+		createWorktreeErr: errors.New("already used by worktree at /elsewhere"),
+		openWorktreeErr:   errors.New("dial herdr socket: connection refused"),
+	}
+	prs := &fakePRLookup{info: gh.PRInfo{Branch: "fix-thing", Title: "t"}}
+
+	_, err := Run(Deps{Session: sess, PRs: prs, Git: &fakeFetcher{}}, cfg,
+		"https://github.com/phin-tech/herdr-phin-util/pull/1", Options{})
+	if err == nil {
+		t.Fatal("Run: want an error, got nil")
+	}
+	for _, want := range []string{"create worktree:", "open worktree:", "connection refused"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	if strings.Contains(err.Error(), "git worktree prune") {
+		t.Errorf("error %q wrongly suggests prune for an unrelated failure", err.Error())
+	}
+}
+
 // --- prompt rendering ---
 
 func TestRenderPromptMissingFieldDoesNotError(t *testing.T) {

@@ -540,9 +540,34 @@ func createOrOpenWorktreeInner(s Session, req herdr.WorktreeRequest) (herdr.Pane
 
 	pane, workspaceID, err = s.OpenWorktree(openReq)
 	if err != nil {
+		if isWorktreeNotFound(err) {
+			// Neither call found anything to reuse: the branch is registered
+			// as checked out somewhere (that's why create failed), but no
+			// worktree answers to it (that's why open-by-branch also failed).
+			// The classic cause is a worktree directory removed by hand --
+			// rm -rf rather than `git worktree remove` -- which leaves git's
+			// own bookkeeping pointing at a place that no longer exists. The
+			// picker's own worktree level already detects and names this
+			// exact state (KindPrunable, session/worktree.go); this mirrors
+			// its message rather than surfacing the raw double-RPC failure,
+			// which reads as "already exists" immediately followed by a
+			// second, unrelated-looking error.
+			return herdr.Pane{}, "", nil, fmt.Errorf(
+				"worktree for %s is missing on disk; run 'git worktree prune' in %s, then try again",
+				req.Branch, req.Cwd)
+		}
 		return herdr.Pane{}, "", nil, fmt.Errorf("create worktree: %w; open worktree: %v", createErr, err)
 	}
 	return pane, workspaceID, worktreeFallbackWarnings(req, pane, createErr), nil
+}
+
+// isWorktreeNotFound reports whether Herdr rejected worktree.open because no
+// worktree answers to the requested branch -- distinct from other rejections
+// (a transport failure, a malformed request) that deserve their own message
+// rather than being reframed as "go run git worktree prune".
+func isWorktreeNotFound(err error) bool {
+	var apiErr *herdr.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == "worktree_not_found"
 }
 
 // worktreeFallbackWarnings says what falling back to worktree.open actually
