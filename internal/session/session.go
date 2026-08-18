@@ -70,6 +70,11 @@ type Candidate struct {
 	// from the source that produced this row, so every level under a source
 	// keeps that source's timeout without a config entry of its own.
 	ChildrenTimeout time.Duration
+	// Opens is meaningful for KindExternal only: true (the default) makes a
+	// Space and runs Command in its pane; false runs Command without a Space,
+	// letting the command decide where the user ends up. True for every other
+	// kind, none of which has a choice about opening something.
+	Opens bool
 	// Label is the primary text: a Space's own label, or a checkout's
 	// directory name.
 	Label string
@@ -268,6 +273,12 @@ func Open(deps Deps, focuser Focuser, cfg *config.Settings, c Candidate, opts op
 		return OpenClone(deps, cfg, c, opts)
 
 	case KindExternal:
+		if !c.Opens {
+			// The row navigates rather than occupies: run its command and let
+			// it decide where the user ends up, with no Space made for it to
+			// have to clean up afterwards.
+			return open.RunExternalCommand(deps.Open, c.Label, c.Command)
+		}
 		return open.RunExternal(deps.Open, cfg, c.Label, c.Command)
 
 	default:

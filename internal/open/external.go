@@ -1,7 +1,10 @@
 package open
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
@@ -54,6 +57,93 @@ func RunExternal(deps Deps, cfg *config.Settings, label string, argv []string) (
 		return out, fmt.Errorf("run %q: %w", argv[0], err)
 	}
 	return out, nil
+}
+
+// RunExternalCommand runs a source row's command without building a Space for
+// it -- the opens:false case. The command is responsible for where the user
+// ends up: it focuses an existing Space, opens something itself, or just does
+// a thing. This makes no Herdr call at all beyond letting the command reach
+// the socket it inherits; nothing here creates, focuses or closes a Space.
+//
+// It is the answer to a row whose destination already exists -- a mirrored
+// Space, say. The command is run as a local subprocess (the same way a source
+// or a children command is), so a run that takes tens of seconds for a cold
+// cloud machine happens under the progress popup rather than in a throwaway
+// pane the row would otherwise have to delete itself out of.
+//
+// The Outcome names no Space, because none was made: a success is reported as
+// "the command ran", and a failure carries the command's own stderr so the
+// reason is in the popup rather than in a pane the user has to go read.
+func RunExternalCommand(deps Deps, label string, argv []string) (Outcome, error) {
+	if len(argv) == 0 {
+		return Outcome{}, fmt.Errorf("external row %q has no command to run", label)
+	}
+
+	done := deps.Progress.step("run", "Running "+argv[0])
+	stderr, err := runLocalCommand(argv)
+	done(err)
+
+	out := Outcome{Kind: target.KindPlain, Label: label}
+	if err != nil {
+		if trimmed := strings.TrimSpace(stderr); trimmed != "" {
+			return out, fmt.Errorf("%s exited: %w: %s", argv[0], err, lastLine(trimmed))
+		}
+		return out, fmt.Errorf("%s exited: %w", argv[0], err)
+	}
+	return out, nil
+}
+
+// runLocalCommand runs argv to completion -- no timeout, since this is a
+// deliberate action a person is waiting on, not a background fetch that must
+// not hang the picker -- and returns whatever it wrote to stderr for a failure
+// to carry. stdout is discarded: a command that navigates has nowhere useful
+// to print, and its exit status is the thing that matters.
+func runLocalCommand(argv []string) (string, error) {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = envWithoutOriginSpace()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stderr.String(), err
+}
+
+// envWithoutOriginSpace is the process environment with Herdr's per-pane
+// identity variables stripped out.
+//
+// This is the rake the issue calls out, removed at the root: HERDR_WORKSPACE_ID
+// (and its pane and tab siblings) is set in every pane, so a command that reads
+// it to mean "the Space I belong to" would read the popup's launching context
+// and act on a Space the user never pointed at -- closing the terminal they
+// were sitting in, in the case that motivated this. An opens:false row has no
+// origin Space by construction, so the honest environment for its command is
+// one where those variables are simply absent rather than present and
+// misleading.
+func envWithoutOriginSpace() []string {
+	const dropPrefix = "HERDR_WORKSPACE_ID=" // plus the two below
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, dropPrefix) ||
+			strings.HasPrefix(kv, "HERDR_PANE_ID=") ||
+			strings.HasPrefix(kv, "HERDR_TAB_ID=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// lastLine keeps the final non-empty line of a command's stderr, which is
+// where a CLI's actual error usually lands -- the lines above it are often a
+// stack or a banner that would just push the reason off a narrow popup.
+func lastLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
+			return trimmed
+		}
+	}
+	return s
 }
 
 // externalCommandLine renders a source row's argv as a single shell command

@@ -286,6 +286,40 @@ func TestFailingSourceIsReportedNotSwallowed(t *testing.T) {
 	}
 }
 
+// A run-only row (opens:false) says "running", not "opening", in the popup --
+// no Space is being made, so "opening" would name a thing that is not
+// happening.
+func TestRunOnlyRowStatusSaysRunning(t *testing.T) {
+	opening := session.Candidate{Kind: session.KindExternal, Label: "goes-somewhere", Command: []string{"go"}, Opens: true}
+	runOnly := session.Candidate{Kind: session.KindExternal, Label: "just-does-it", Command: []string{"go"}, Opens: false}
+
+	if got := statusFor(opening); !strings.HasPrefix(got, "opening") {
+		t.Errorf("opens:true status = %q, want it to open", got)
+	}
+	if got := statusFor(runOnly); !strings.HasPrefix(got, "running") {
+		t.Errorf("opens:false status = %q, want it to run", got)
+	}
+}
+
+// A run-only row is fed through the picker like any external row: it lands in
+// the list carrying Opens=false, so submit will route it to the run-only path.
+func TestRunOnlyRowLandsWithOpensFalse(t *testing.T) {
+	run := fakeRunner(map[string]source.Result{
+		"anyscale": {Rows: []source.Row{{ID: "a", Label: "mirror", Command: []string{"connect", "--handoff"}, Opens: boolp(false)}}},
+	})
+	p := externalPicker(t, run, []config.SourceSettings{{Name: "anyscale", Command: []string{"x"}}})
+	drainSources(p)
+
+	if len(p.filtered) != 1 {
+		t.Fatalf("want the run-only row, got %v", labels(p.filtered))
+	}
+	if p.filtered[0].Opens {
+		t.Error("the run-only row should carry Opens=false into the picker")
+	}
+}
+
+func boolp(b bool) *bool { return &b }
+
 // An external row runs its source's own command, so it offers neither the
 // agent step nor a setup -- picking it is a single act.
 func TestExternalRowStartsNoAgent(t *testing.T) {

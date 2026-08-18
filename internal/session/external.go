@@ -49,6 +49,7 @@ func externalRows(run source.Runner, spec source.Spec) ([]Candidate, []string) {
 			Label:   r.Label,
 			Detail:  r.Detail,
 			Command: r.Command,
+			Opens:   r.OpensSpace(),
 		}
 		if len(r.Children) > 0 {
 			c.Children = r.Children

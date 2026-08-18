@@ -57,6 +57,21 @@ type Row struct {
 	// footer that already says what tab would do. Empty is fine; the footer
 	// falls back to a generic word.
 	ChildrenLabel string `json:"children_label"`
+	// Opens says whether picking this row creates a Space for its Command.
+	// A pointer so an omitted key reads as the default (true) rather than as
+	// false: true means "put the command in a new Space" -- the behaviour every
+	// row has always had -- and false means "just run the command, it decides
+	// where I end up" (it focuses an existing Space, opens something itself, or
+	// does a thing). A row that navigates rather than occupies sets it false so
+	// no empty Space is made for it to clean up.
+	Opens *bool `json:"opens"`
+}
+
+// OpensSpace reports whether picking this row should create a Space for its
+// command. The default is true: an omitted "opens" key keeps the behaviour a
+// row has always had.
+func (r Row) OpensSpace() bool {
+	return r.Opens == nil || *r.Opens
 }
 
 // Result is what one source produced: its rows, and the problems worth

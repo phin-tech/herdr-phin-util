@@ -256,8 +256,39 @@ Each row is:
 | `label` | the primary text (required) |
 | `detail` | the dimmed secondary line |
 | `command` | the argv a pick runs — required unless `children` is set |
+| `opens` | `false` runs `command` without making a Space for it (default `true`, see below) |
 | `children` | argv that lists what's *inside* this row, same JSON-lines format (see below) |
 | `children_label` | what `tab` descends into, for the footer — "repos", "branches" |
+
+#### A row that runs without opening a Space
+
+By default `enter` makes a Space and runs the row's `command` in its pane. But
+some rows navigate rather than occupy — the destination already exists (a
+mirrored Space, say), and the command's job is "make sure it's there, then take
+me to it". For those, a fresh Space is litter.
+
+`opens: false` runs the command **without** making a Space:
+
+```json
+{"id":"anyscale:expwrk_56em","label":"sam-post-vpn-fix","detail":"RUNNING · anyscale",
+ "command":["herdr-anyscale-remote","connect","--name","sam-post-vpn-fix","--handoff"],
+ "opens":false}
+```
+
+- The command runs as a subprocess under the progress popup — a spinner while
+  it works (tens of seconds is fine for a cold cloud machine), gone when it
+  exits cleanly.
+- If it fails, the popup stays and shows the command's own stderr, so the
+  reason isn't stranded in a pane you have to find and read.
+- The command decides where you end up: it focuses an existing Space, opens
+  something itself, or just does a thing.
+- Herdr's per-pane identity variables (`HERDR_WORKSPACE_ID` and its pane/tab
+  siblings) are **stripped** from the command's environment. There's no origin
+  Space, so a command that reads them to mean "the Space I'm in" can't act on
+  one the user never pointed at. `HERDR_SOCK` and everything else pass through,
+  so the command still reaches Herdr.
+
+Absent `opens` (or `opens: true`) is the behaviour every row has always had.
 
 #### Descending into a row
 

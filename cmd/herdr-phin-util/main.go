@@ -510,6 +510,14 @@ func reportPick(client *herdr.Client, p *ui.Picker) int {
 		// Switching is its own confirmation -- you are looking at the result.
 		return 0
 	}
+	if picked.Kind == session.KindExternal && !picked.Opens {
+		// No Space was made: the command handled where the user ended up, so
+		// "Space ready" would name something that does not exist. The run
+		// succeeded (a failure took the runErr branch above), which is all
+		// there is to say.
+		_ = client.Notify("Done", picked.Label)
+		return 0
+	}
 	if reportWarnings(client, out) {
 		return 1
 	}
@@ -605,12 +613,21 @@ func runSources() int {
 		fmt.Printf("%s (%s)\n", res.Name, orNone(strings.Join(src.Command, " ")))
 		for _, row := range res.Rows {
 			// A row with children is a level, not a leaf; naming its
-			// children_label says tab would descend here rather than open.
-			descend := ""
+			// children_label says tab would descend here rather than open. A
+			// run-only row (opens:false) makes no Space when picked, which is
+			// worth flagging next to one that does.
+			var notes []string
 			if len(row.Children) > 0 {
-				descend = "  → " + orNone(row.ChildrenLabel)
+				notes = append(notes, "→ "+orNone(row.ChildrenLabel))
 			}
-			fmt.Printf("  %-24s %-28s %s%s\n", orNone(row.ID), row.Label, row.Detail, descend)
+			if len(row.Command) > 0 && !row.OpensSpace() {
+				notes = append(notes, "run-only")
+			}
+			suffix := ""
+			if len(notes) > 0 {
+				suffix = "  " + strings.Join(notes, " · ")
+			}
+			fmt.Printf("  %-24s %-28s %s%s\n", orNone(row.ID), row.Label, row.Detail, suffix)
 		}
 		if len(res.Rows) == 0 && len(res.Problems) == 0 {
 			fmt.Println("  (no rows)")

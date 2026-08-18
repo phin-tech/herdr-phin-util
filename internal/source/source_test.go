@@ -150,3 +150,23 @@ func TestRunRejectsARowWithNothingToDo(t *testing.T) {
 		t.Errorf("want a 'nothing to do' problem, got %v", res.Problems)
 	}
 }
+
+func TestOpensDefaultsToTrueAndReadsFalse(t *testing.T) {
+	res := Run(sh(`
+printf '%s\n' '{"id":"a","label":"opens-a-space","command":["go"]}'
+printf '%s\n' '{"id":"b","label":"just-runs","command":["go"],"opens":false}'
+printf '%s\n' '{"id":"c","label":"explicit-true","command":["go"],"opens":true}'
+`))
+	if len(res.Problems) != 0 || len(res.Rows) != 3 {
+		t.Fatalf("rows=%+v problems=%v", res.Rows, res.Problems)
+	}
+	if !res.Rows[0].OpensSpace() {
+		t.Error("an omitted opens should default to true")
+	}
+	if res.Rows[1].OpensSpace() {
+		t.Error("opens:false should read as false")
+	}
+	if !res.Rows[2].OpensSpace() {
+		t.Error("opens:true should read as true")
+	}
+}

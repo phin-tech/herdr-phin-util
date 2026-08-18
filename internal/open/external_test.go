@@ -2,6 +2,7 @@ package open
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -75,5 +76,70 @@ func TestRunExternalReportsTheSpaceWhenTheCommandFails(t *testing.T) {
 	}
 	if out.WorkspaceID != "w1" || out.PaneID != "p1" {
 		t.Errorf("the Space that was built should still be reported: %+v", out)
+	}
+}
+
+// opens:false runs the command and makes no Space -- structurally, since
+// RunExternalCommand is handed no Session at all.
+func TestRunExternalCommandMakesNoSpace(t *testing.T) {
+	out, err := RunExternalCommand(Deps{}, "act", []string{"/bin/sh", "-c", "exit 0"})
+	if err != nil {
+		t.Fatalf("RunExternalCommand: %v", err)
+	}
+	if out.WorkspaceID != "" || out.PaneID != "" {
+		t.Errorf("no Space should be reported for a run-only row: %+v", out)
+	}
+	if out.Label != "act" {
+		t.Errorf("Label should be carried through: %+v", out)
+	}
+}
+
+// A failure carries the command's own stderr, so the reason is in the popup
+// rather than in a pane the user has to go read.
+func TestRunExternalCommandFailureCarriesStderr(t *testing.T) {
+	_, err := RunExternalCommand(Deps{}, "act", []string{"/bin/sh", "-c", "echo 'no credentials' >&2; exit 3"})
+	if err == nil {
+		t.Fatal("want an error for a command that exited non-zero")
+	}
+	if !strings.Contains(err.Error(), "no credentials") {
+		t.Errorf("error should carry the command's stderr, got %v", err)
+	}
+}
+
+func TestRunExternalCommandEmptyIsAnError(t *testing.T) {
+	if _, err := RunExternalCommand(Deps{}, "act", nil); err == nil {
+		t.Fatal("want an error for a run-only row with no command")
+	}
+}
+
+// The origin-Space identity variables are stripped, so a command cannot read
+// HERDR_WORKSPACE_ID and act on a Space the user never pointed at. Other
+// variables pass through untouched.
+func TestEnvWithoutOriginSpaceStripsHerdrIdentity(t *testing.T) {
+	t.Setenv("HERDR_WORKSPACE_ID", "w9")
+	t.Setenv("HERDR_PANE_ID", "w9:p1")
+	t.Setenv("HERDR_TAB_ID", "w9:t1")
+	t.Setenv("HERDR_SOCK", "/tmp/herdr.sock")
+	t.Setenv("PATH_MARKER_FOR_TEST", "keep-me")
+
+	env := envWithoutOriginSpace()
+	joined := strings.Join(env, "\n")
+
+	for _, gone := range []string{"HERDR_WORKSPACE_ID=", "HERDR_PANE_ID=", "HERDR_TAB_ID="} {
+		if strings.Contains(joined, gone) {
+			t.Errorf("%s should be stripped from the child environment", gone)
+		}
+	}
+	// The socket is how the command reaches Herdr at all -- stripping it would
+	// break the very thing an opens:false command exists to do.
+	if !strings.Contains(joined, "HERDR_SOCK=/tmp/herdr.sock") {
+		t.Error("HERDR_SOCK must survive: it is how the command reaches Herdr")
+	}
+	if !strings.Contains(joined, "PATH_MARKER_FOR_TEST=keep-me") {
+		t.Error("unrelated variables must pass through")
+	}
+	// Guard the assertion itself: prove the stripped var really was in os.Environ.
+	if _, ok := os.LookupEnv("HERDR_WORKSPACE_ID"); !ok {
+		t.Fatal("test precondition: HERDR_WORKSPACE_ID should be set")
 	}
 }

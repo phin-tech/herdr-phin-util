@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
+	"github.com/phin-tech/herdr-phin-util/internal/open"
 	"github.com/phin-tech/herdr-phin-util/internal/source"
 )
 
@@ -90,5 +91,37 @@ func TestExternalChildrenInheritTimeoutAndName(t *testing.T) {
 	}
 	if len(cands) != 1 || cands[0].Label != "sous-chef" || cands[0].Kind != KindExternal {
 		t.Errorf("children not mapped: %+v", cands)
+	}
+}
+
+func TestExternalCandidatesStampOpens(t *testing.T) {
+	no := false
+	run := func(spec source.Spec) source.Result {
+		return source.Result{Name: spec.Name, Rows: []source.Row{
+			{ID: "a", Label: "opens", Command: []string{"go"}},            // default true
+			{ID: "b", Label: "runs", Command: []string{"go"}, Opens: &no}, // explicit false
+		}}
+	}
+	cands, _ := ExternalCandidates(run, config.SourceSettings{Name: "s", Command: []string{"x"}})
+	if !cands[0].Opens {
+		t.Error("an omitted opens should map to Opens=true")
+	}
+	if cands[1].Opens {
+		t.Error("opens:false should map to Opens=false")
+	}
+}
+
+// An opens:false row is dispatched to the run-only path, which needs no Herdr
+// session at all -- proven here by opening one with empty Deps and a real
+// no-op command. An opens:true row would reach for Deps.Session.CreateWorkspace
+// and could not run this way, which is exactly the branch being verified.
+func TestOpenExternalOpensFalseNeedsNoSpace(t *testing.T) {
+	c := Candidate{Kind: KindExternal, Label: "act", Command: []string{"/bin/sh", "-c", "exit 0"}, Opens: false}
+	out, err := Open(Deps{}, &fakeFocuser{}, &config.Settings{}, c, open.Options{})
+	if err != nil {
+		t.Fatalf("opens:false open: %v", err)
+	}
+	if out.WorkspaceID != "" {
+		t.Errorf("no Space should have been made: %+v", out)
 	}
 }

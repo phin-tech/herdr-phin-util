@@ -6,6 +6,28 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.10.5 — 2026-08-18
+
+A picker row can run without opening a Space for it (#24): the last rough edge
+of external sources, for a row whose destination already exists.
+
+- A source row gained an optional `opens` field (default `true`). `opens:
+  false` runs the row's `command` as a subprocess under the progress popup and
+  makes **no** Space — the command decides where the user ends up (it focuses
+  an existing Space, opens something itself, or just does a thing). A spinner
+  shows while it works; a clean exit closes the popup, and a failure keeps it
+  open showing the command's own stderr rather than stranding the error in a
+  pane. No timeout, since this is a deliberate action a person is waiting on.
+- Herdr's per-pane identity variables (`HERDR_WORKSPACE_ID`, `HERDR_PANE_ID`,
+  `HERDR_TAB_ID`) are stripped from the command's environment: an opens:false
+  row has no origin Space, so a command reading them to mean "the Space I'm in"
+  can no longer act on one the user never pointed at — the rake #24 called out,
+  removed at the root. `HERDR_SOCK` and everything else pass through.
+- `open.RunExternalCommand` runs the argv; `session.Candidate` gained `Opens`;
+  `herdr-phin-util sources` marks a run-only row `run-only`.
+- Absent `opens` is exactly the previous behaviour — a row with a command and
+  no `opens` still opens a Space.
+
 ## 0.10.4 — 2026-08-18
 
 External picker rows can have children now (#23): `tab` descends into a remote

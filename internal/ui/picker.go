@@ -1378,6 +1378,13 @@ func statusFor(c session.Candidate) string {
 	switch c.Kind {
 	case session.KindSpace:
 		return "switching to " + c.Label + "..."
+	case session.KindExternal:
+		if !c.Opens {
+			// No Space is being made -- the command is what runs -- so "opening"
+			// would name a thing that is not happening.
+			return "running " + c.Label + "..."
+		}
+		return "opening " + c.Label + "..."
 	case session.KindNewBranch:
 		return "creating branch " + c.Label + "..."
 	case session.KindLinearBase:
