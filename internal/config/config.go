@@ -124,6 +124,27 @@ type ProjectSettings struct {
 	Depth int
 }
 
+// SourceSettings is one opt-in external row source: a command that prints
+// extra picker rows the plugin could not have written into a file ahead of
+// time, because they are live remote state (which machines exist, which are
+// running). See internal/source for the wire format and how one is run.
+//
+// It is deliberately a command rather than more config: the row list sits
+// behind an authenticated API, so the fetch is real work that stays a separate
+// binary's problem. This plugin never grows a cloud SDK.
+type SourceSettings struct {
+	// Name attributes a source's rows and, more importantly, its failures: a
+	// source that times out is named so the missing rows have a reason.
+	Name string
+	// Command is the argv run to produce rows. It prints JSON lines on stdout,
+	// one row each.
+	Command []string
+	// TimeoutMs bounds the fetch. A source is run off the picker's critical
+	// path, so a slow one degrades to "those rows are missing" at this
+	// deadline rather than holding the popup open.
+	TimeoutMs int
+}
+
 // SetupSettings says where the workspace recipes live, and which one Enter
 // uses when nothing is picked explicitly.
 //
@@ -158,6 +179,10 @@ type Settings struct {
 	Projects ProjectSettings
 	// Setups is where the workspace recipes are looked for.
 	Setups SetupSettings
+	// Sources are the opt-in external row sources. Empty is the norm and the
+	// whole point: no [[sources]] means no change to the picker and no added
+	// latency, since nothing is run.
+	Sources []SourceSettings
 	// WorktreePath is the raw configured template for where a worktree is
 	// created, or empty when unset. Placeholders: {host}, {owner}, {repo},
 	// {repo_root}, {branch}. Empty means "let Herdr choose", which is the
@@ -210,7 +235,23 @@ type rawConfig struct {
 	Linear struct {
 		APIKey string `toml:"api_key"`
 	} `toml:"linear"`
+	Sources []struct {
+		Name    string   `toml:"name"`
+		Command []string `toml:"command"`
+		// Pointer so an omitted timeout takes the default rather than reading
+		// as a zero that would mean "no time at all".
+		TimeoutMs *int `toml:"timeout_ms"`
+	} `toml:"sources"`
 }
+
+// Source timeout bounds. The default is generous enough for an API round trip
+// but short enough that a wedged source is a blip rather than a wait. The
+// maximum bounds a typo -- a source is off the critical path, but a
+// ten-minute one still holds a goroutine and a subprocess for ten minutes.
+const (
+	defaultSourceTimeoutMs = 3000
+	maxSourceTimeoutMs     = 60000
+)
 
 // Dir is the plugin's config directory: the one Herdr injects when it
 // launches us, or the same path reconstructed when run by hand.
@@ -324,8 +365,57 @@ func LoadFrom(dir string) (*Settings, error) {
 
 	s.WorktreePath = raw.Worktrees.Path
 	s.LinearAPIKey = raw.Linear.APIKey
+	s.Sources = resolveSources(s, raw.Sources)
 
 	return s, nil
+}
+
+// resolveSources validates each [[sources]] entry, keeping the good ones and
+// reporting the rest -- a source with no name or no command cannot be run or
+// attributed, so it is dropped with a reason rather than left to fail
+// silently at fetch time. Duplicate names are rejected for the same reason a
+// source needs one at all: a failure has to point at exactly one entry.
+func resolveSources(s *Settings, raw []struct {
+	Name      string   `toml:"name"`
+	Command   []string `toml:"command"`
+	TimeoutMs *int     `toml:"timeout_ms"`
+}) []SourceSettings {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []SourceSettings
+	seen := map[string]bool{}
+	for i, r := range raw {
+		name := strings.TrimSpace(r.Name)
+		if name == "" {
+			s.Problems = append(s.Problems, fmt.Sprintf("sources[%d] has no name — skipping it", i))
+			continue
+		}
+		if len(r.Command) == 0 {
+			s.Problems = append(s.Problems, fmt.Sprintf("source %q has no command — skipping it", name))
+			continue
+		}
+		if seen[name] {
+			s.Problems = append(s.Problems, fmt.Sprintf("source %q is defined more than once — using the first", name))
+			continue
+		}
+		seen[name] = true
+
+		timeout := defaultSourceTimeoutMs
+		if r.TimeoutMs != nil {
+			switch t := *r.TimeoutMs; {
+			case t <= 0:
+				s.Problems = append(s.Problems, fmt.Sprintf("source %q timeout_ms %d is not positive — using %d", name, t, defaultSourceTimeoutMs))
+			case t > maxSourceTimeoutMs:
+				s.Problems = append(s.Problems, fmt.Sprintf("source %q timeout_ms %d is above the %d maximum — using %d", name, t, maxSourceTimeoutMs, maxSourceTimeoutMs))
+				timeout = maxSourceTimeoutMs
+			default:
+				timeout = t
+			}
+		}
+		out = append(out, SourceSettings{Name: name, Command: r.Command, TimeoutMs: timeout})
+	}
+	return out
 }
 
 // placeholder matches the {host}/{owner}/{repo} style substitutions a repo

@@ -6,6 +6,29 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.10.3 — 2026-08-18
+
+Optional external row sources for the project picker (#22): reach a remote
+machine — a devbox, a pod, a cloud workspace — the same way you reach a
+checkout.
+
+- A new `[[sources]]` config block names a command that prints extra picker
+  rows as JSON lines (`id`, `label`, `detail`, `command`). The rows land
+  beside `open` and `new`, filtered by the same matcher; `Enter` makes a Space
+  whose pane runs the row's own `command`. Everything about reaching the
+  machine — auth, an SDK, a short-lived token — stays in that command and
+  never enters this plugin.
+- Sources are opt-in and invisible when unused: no `[[sources]]` means no
+  change and no added latency. They're fetched off the picker's critical path,
+  each concurrently under its own `timeout_ms` (default 3s, capped at 60s), so
+  local rows draw first and a slow or broken source degrades to a `⚠` line
+  under the list rather than a hung popup. Rows dedup by their stable `id`.
+- `herdr-phin-util sources` runs every source and prints its rows and problems
+  without opening anything — the `projects`-style debug view for a source.
+- New `internal/source` package (run a source, parse its rows, bound it in
+  time); `session.Candidate` gained `Kind: external`, an `ID` and a `Command`;
+  `open.RunExternal` builds the Space and runs the command.
+
 ## 0.10.0 — 2026-08-03
 
 A stack GitHub knows about is read from GitHub; everything else is still

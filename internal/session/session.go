@@ -39,11 +39,24 @@ const (
 	// opened. It is not a thing to open in its own right -- picking one opens
 	// the row it was offered for, built that way.
 	KindSetup Kind = "setup"
+	// KindExternal is a row an external source produced -- a remote machine, a
+	// devbox, a pod. It carries no checkout on disk; picking it makes a Space
+	// whose pane runs the source's own Command to put you there.
+	KindExternal Kind = "external"
 )
 
 // Candidate is one row in the picker.
 type Candidate struct {
 	Kind Kind
+	// ID is a stable identifier for a row that came from outside the plugin's
+	// own enumeration -- an external source (KindExternal). It is what dedup
+	// keys on and what Jump's ranking has to learn against. Empty for every
+	// locally-derived row, whose identity is its Kind, Label and Path.
+	ID string
+	// Command is the argv a KindExternal row runs when picked. The source that
+	// produced the row owns it wholesale; this plugin only carries it through
+	// to the pane. Nil on every other kind.
+	Command []string
 	// Label is the primary text: a Space's own label, or a checkout's
 	// directory name.
 	Label string
@@ -240,6 +253,9 @@ func Open(deps Deps, focuser Focuser, cfg *config.Settings, c Candidate, opts op
 
 	case KindClone:
 		return OpenClone(deps, cfg, c, opts)
+
+	case KindExternal:
+		return open.RunExternal(deps.Open, cfg, c.Label, c.Command)
 
 	default:
 		return open.Outcome{}, fmt.Errorf("unknown candidate kind %q", c.Kind)

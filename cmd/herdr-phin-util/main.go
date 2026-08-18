@@ -23,6 +23,7 @@ import (
 	"github.com/phin-tech/herdr-phin-util/internal/promote"
 	"github.com/phin-tech/herdr-phin-util/internal/session"
 	"github.com/phin-tech/herdr-phin-util/internal/setup"
+	"github.com/phin-tech/herdr-phin-util/internal/source"
 	"github.com/phin-tech/herdr-phin-util/internal/ui"
 	"github.com/phin-tech/herdr-phin-util/internal/version"
 )
@@ -39,6 +40,8 @@ usage:
   herdr-phin-util projects             list the checkouts the picker would offer
   herdr-phin-util worktrees            list the current repo's worktrees and branches
   herdr-phin-util setups [--repo DIR]  list the setups defined for a checkout
+  herdr-phin-util sources              run the external row sources and print
+                                       the rows (and problems) they produce
   herdr-phin-util project <dir> [--agent|--no-agent] [--setup NAME] [--dry-run]
                                        open a Space on a checkout
   herdr-phin-util promote [pane_id]    move a pane into a Space of its own
@@ -60,9 +63,16 @@ pick lists the Spaces already open followed by every checkout found under
 second. tab on a repo descends into its worktrees and branches, and shift+tab
 comes back; pick-worktree starts there for the repo you are already in.
 
-projects, worktrees and setups print what each level would offer without
-opening anything, which is the way to check a roots setting, a branch list, or
-why a setup is not being offered.
+projects, worktrees, setups and sources print what each level would offer
+without opening anything, which is the way to check a roots setting, a branch
+list, why a setup is not being offered, or why an external source's rows are
+missing from the picker.
+
+An external row source is an opt-in [[sources]] command that prints extra
+picker rows -- a remote machine, a devbox, a pod -- as JSON lines on stdout.
+The rows land beside the checkouts in the project picker, fetched off the
+critical path so a slow or broken source degrades to missing rows with a
+reason rather than a hung popup.
 
 A setup is a YAML recipe -- tabs, panes, agents, prompts and commands -- read
 from setups/ and repos/<repo>/ in the plugin config directory, and from
@@ -113,6 +123,8 @@ func main() {
 		os.Exit(runWorktrees())
 	case "setups":
 		os.Exit(runSetups(args[1:]))
+	case "sources":
+		os.Exit(runSources())
 	case "project":
 		os.Exit(runProject(args[1:]))
 	case "handoff":
@@ -384,6 +396,10 @@ func runPick() int {
 		return 1
 	}
 
+	for _, p := range cfg.Problems {
+		fmt.Fprintln(os.Stderr, "config:", p)
+	}
+
 	candidates, err := session.List(client, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -406,7 +422,9 @@ func runPick() int {
 	}
 
 	p := tea.NewProgram(
-		ui.NewPicker(cfg, pickerDeps(client, cfg), client, candidates).WithWorkspaces(workspaces),
+		ui.NewPicker(cfg, pickerDeps(client, cfg), client, candidates).
+			WithWorkspaces(workspaces).
+			WithSources(source.Run),
 		tea.WithMouseCellMotion(),
 	)
 	final, err := p.Run()
@@ -553,6 +571,51 @@ func runProjects() int {
 	}
 	for _, path := range paths {
 		fmt.Println(path)
+	}
+	return 0
+}
+
+// runSources runs every configured [[sources]] command and prints the rows and
+// problems each produced. It is to a source what "projects" is to [projects]:
+// no Herdr session, no popup -- just the direct answer to "is my source
+// working, and what is it saying?", which is the question a row missing from
+// the picker leaves you with.
+func runSources() int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	for _, p := range cfg.Problems {
+		fmt.Fprintln(os.Stderr, "config:", p)
+	}
+
+	if len(cfg.Sources) == 0 {
+		fmt.Fprintln(os.Stderr, "no [[sources]] configured")
+		return 1
+	}
+
+	problems := false
+	for _, src := range cfg.Sources {
+		res := source.Run(source.Spec{
+			Name:    src.Name,
+			Command: src.Command,
+			Timeout: time.Duration(src.TimeoutMs) * time.Millisecond,
+		})
+		fmt.Printf("%s (%s)\n", res.Name, orNone(strings.Join(src.Command, " ")))
+		for _, row := range res.Rows {
+			fmt.Printf("  %-24s %-28s %s\n", orNone(row.ID), row.Label, row.Detail)
+		}
+		if len(res.Rows) == 0 && len(res.Problems) == 0 {
+			fmt.Println("  (no rows)")
+		}
+		for _, prob := range res.Problems {
+			fmt.Fprintln(os.Stderr, "  problem:", prob)
+			problems = true
+		}
+	}
+	if problems {
+		return 1
 	}
 	return 0
 }

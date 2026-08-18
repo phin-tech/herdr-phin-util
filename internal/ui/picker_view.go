@@ -71,7 +71,27 @@ func (p *Picker) pickerView() string {
 		add(p.viewPickerHint())
 	}
 
+	for _, line := range p.sourceProblemLines() {
+		add(line)
+	}
+
 	return strings.Join(lines, "\n")
+}
+
+// sourceProblemLines renders the reasons some external rows are missing, one
+// per source problem, dimmed so they sit under the picker as a footnote rather
+// than as an error the whole popup is about. Nothing is shown when every
+// source answered cleanly, which is the norm -- and the setup and worktree
+// levels never show them, since sources belong to the project level.
+func (p *Picker) sourceProblemLines() []string {
+	if len(p.sourceProblems) == 0 || p.level != levelProjects {
+		return nil
+	}
+	out := make([]string, len(p.sourceProblems))
+	for i, prob := range p.sourceProblems {
+		out[i] = dimStyle.Render("⚠ " + prob)
+	}
+	return out
 }
 
 // viewRunning replaces the list with the checklist while a pick is being
@@ -242,6 +262,8 @@ func rowTag(k session.Kind) string {
 		return createTagStyle.Render("link  ")
 	case session.KindClone:
 		return remoteTagStyle.Render("clone ")
+	case session.KindExternal:
+		return remoteTagStyle.Render("remote")
 	case session.KindPrunable:
 		return errStyle.Render("gone  ")
 	case session.KindSetup:
@@ -354,6 +376,10 @@ func (p *Picker) viewAgentToggle() string {
 		// ticket held nothing is being switched to -- the row is a repository
 		// to cut the ticket's branch in, and the agent will start after all.
 		text += dimStyle.Render("  (not used when switching)")
+	} else if c, ok := p.selected(); ok && c.Kind == session.KindExternal {
+		// An external row runs its source's own command; the agent toggle has
+		// no say in what fills that Space.
+		text += dimStyle.Render("  (not used for remote rows)")
 	}
 	return "  " + text
 }

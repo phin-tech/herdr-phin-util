@@ -11,6 +11,7 @@ import (
 	"github.com/phin-tech/herdr-phin-util/internal/herdr"
 	"github.com/phin-tech/herdr-phin-util/internal/open"
 	"github.com/phin-tech/herdr-phin-util/internal/session"
+	"github.com/phin-tech/herdr-phin-util/internal/source"
 	"github.com/phin-tech/herdr-phin-util/internal/target"
 )
 
@@ -80,6 +81,20 @@ type Picker struct {
 	// worktreeAll is the worktree level as it was listed, kept so dropping a
 	// ticket restores the branches rather than re-reading the repository.
 	worktreeAll []session.Candidate
+
+	// runSource fetches one external source's rows. It is injected so the
+	// picker can be tested against a literal without spawning a process; nil
+	// disables sources entirely, which is what the worktree picker and every
+	// test that does not care about them get.
+	runSource source.Runner
+	// externalIDs dedups rows across sources by their stable id, so two sources
+	// that surface the same machine -- or one run twice -- do not stack it.
+	// A row with no id is always kept: it has nothing to dedup against.
+	externalIDs map[string]bool
+	// sourceProblems are the reasons some external rows are missing -- a source
+	// that timed out, failed, or printed a malformed line -- shown rather than
+	// swallowed. Kept in arrival order.
+	sourceProblems []string
 
 	all      []session.Candidate
 	filtered []session.Candidate
@@ -153,8 +168,23 @@ func NewPicker(cfg *config.Settings, deps session.Deps, focuser session.Focuser,
 		width:      80,
 		height:     24,
 	}
+	p.externalIDs = map[string]bool{}
 	p.filter.Placeholder = p.filterPlaceholder(levelProjects)
 	p.applyFilter()
+	return p
+}
+
+// WithSources wires in the external row sources and the runner that fetches
+// them. Without it -- the worktree picker, and every path that has no
+// [[sources]] configured -- the picker behaves exactly as it did before
+// sources existed: nothing is run and no latency is added.
+//
+// Only the full project picker takes sources: an external row is a "place I
+// work" that sits beside open Spaces and checkouts, which is the top level.
+// The worktree picker is already inside one repository, where a remote machine
+// is not one of the branches.
+func (p *Picker) WithSources(run source.Runner) *Picker {
+	p.runSource = run
 	return p
 }
 
@@ -367,7 +397,111 @@ func (p *Picker) refresh() tea.Cmd {
 }
 
 func (p *Picker) Init() tea.Cmd {
-	return textinput.Blink
+	cmds := []tea.Cmd{textinput.Blink}
+	cmds = append(cmds, p.fetchSources()...)
+	return tea.Batch(cmds...)
+}
+
+// externalRowsMsg is one source's rows arriving, off the critical path. One
+// message per source rather than one for all of them: a fast source's rows
+// should draw the moment they are ready, not wait behind a slow sibling's
+// timeout.
+type externalRowsMsg struct {
+	candidates []session.Candidate
+	problems   []string
+}
+
+// fetchSources kicks off one command per configured source, each on its own
+// goroutine so a slow one never holds up the others or the popup. It runs only
+// for the full project picker (nothing wired the runner in otherwise) and only
+// from the top level -- a source is a place to work that belongs beside the
+// projects, not a branch of any one repository.
+//
+// The rows arrive as messages while the local list is already on screen, which
+// is the whole design: local rows draw first, external rows land beside them
+// as each source answers, and a source that never answers is a missing set of
+// rows with a reason rather than a popup that never opened.
+func (p *Picker) fetchSources() []tea.Cmd {
+	if p.runSource == nil || p.rootLevel != levelProjects {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, src := range p.cfg.Sources {
+		src := src
+		run := p.runSource
+		cmds = append(cmds, func() tea.Msg {
+			candidates, problems := session.ExternalCandidates(run, src)
+			return externalRowsMsg{candidates: candidates, problems: problems}
+		})
+	}
+	return cmds
+}
+
+// addExternalRows folds one source's arriving rows into the project list,
+// dropping any whose id was already seen, and preserves the row the user is
+// looking at so a source answering under their cursor does not move the
+// selection out from under them.
+func (p *Picker) addExternalRows(msg externalRowsMsg) {
+	p.sourceProblems = append(p.sourceProblems, msg.problems...)
+
+	fresh := make([]session.Candidate, 0, len(msg.candidates))
+	for _, c := range msg.candidates {
+		if c.ID != "" {
+			if p.externalIDs[c.ID] {
+				continue
+			}
+			p.externalIDs[c.ID] = true
+		}
+		fresh = append(fresh, c)
+	}
+
+	// External rows land beside open Spaces and checkouts at the top level,
+	// which is the list projectAll holds and every other level is restored
+	// from. Appending there means they are present whether the user is at the
+	// project level now or descends back to it later.
+	p.projectAll = append(p.projectAll, fresh...)
+
+	// The list actually on screen only needs rebuilding when the project level
+	// is what is on screen. In a repository or the setup list, the new rows are
+	// waiting in projectAll for the trip back up.
+	if p.level != levelProjects {
+		return
+	}
+	p.all = p.projectAll
+	p.reapplyPreservingSelection()
+}
+
+// reapplyPreservingSelection re-runs the filter but keeps the highlighted row
+// highlighted, by remembering which candidate it was and finding it again.
+// applyFilter alone resets the cursor to the top, which is right for a
+// keystroke but wrong for rows arriving on their own -- the selection should
+// not jump because a source three machines away finally answered.
+func (p *Picker) reapplyPreservingSelection() {
+	sel, ok := p.selected()
+	p.applyFilter()
+	if !ok {
+		return
+	}
+	for i, c := range p.filtered {
+		if sameRow(c, sel) {
+			p.cursor = i
+			break
+		}
+	}
+	p.clampCursor()
+}
+
+// sameRow reports whether two candidates are the same row for the purpose of
+// keeping a selection. An external row is identified by its stable id; every
+// other row by the fields that make it what it is.
+func sameRow(a, b session.Candidate) bool {
+	if a.Kind != b.Kind {
+		return false
+	}
+	if a.Kind == session.KindExternal {
+		return a.ID == b.ID && a.Label == b.Label
+	}
+	return a.Label == b.Label && a.Path == b.Path
 }
 
 type pickResultMsg struct {
@@ -403,6 +537,10 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.done = true
 		p.quitting = true
 		return p, tea.Quit
+
+	case externalRowsMsg:
+		p.addExternalRows(msg)
+		return p, nil
 
 	case descendMsg:
 		p.running = false
@@ -927,7 +1065,11 @@ func (p *Picker) clampCursor() {
 const chromeHeight = 9
 
 func (p *Picker) pageSize() int {
-	size := p.height - chromeHeight
+	// Each source-problem footnote takes a line the list can no longer have, so
+	// the list shrinks to keep the whole popup on screen rather than pushing
+	// the footnotes off the bottom where a missing source's reason would be
+	// invisible -- the opposite of reporting it.
+	size := p.height - chromeHeight - len(p.sourceProblemLines())
 	if size < 1 {
 		return 1
 	}
@@ -1047,7 +1189,9 @@ func (p *Picker) toggleEditor() tea.Cmd {
 // is the only case where a prompt exists to edit.
 func startsAnAgent(c session.Candidate) bool {
 	switch c.Kind {
-	case session.KindSpace, session.KindPrunable:
+	case session.KindSpace, session.KindPrunable, session.KindExternal:
+		// An external row runs its source's own command, not an agent: there is
+		// no agent step to toggle, no prompt to edit, and no setup to apply.
 		return false
 	default:
 		return true

@@ -223,6 +223,51 @@ When a repo is missing from the list, `herdr-phin-util projects` prints exactly
 what discovery found and needs no Herdr session — so it answers "is this a
 discovery problem or a picker problem" on its own.
 
+### External row sources
+
+Some places you work aren't checkouts on disk — a remote machine, a devbox, a
+pod, a cloud workspace. If you can write a command that lists them, the picker
+can show them beside your projects:
+
+```toml
+[[sources]]
+name = "anyscale"
+command = ["herdr-anyscale-remote", "picker-rows"]
+timeout_ms = 3000
+```
+
+The command prints one row per line as JSON on stdout:
+
+```json
+{"id":"anyscale:expwrk_2d74","label":"jim-dev2","detail":"RUNNING · anyscale","command":["herdr-anyscale-remote","connect","--name","jim-dev2"]}
+{"id":"anyscale:expwrk_fs8z","label":"neil-spec-service","detail":"TERMINATED · anyscale","command":["herdr-anyscale-remote","connect","--name","neil-spec-service"]}
+```
+
+Those rows land beside `open` and `new`, filtered by the same matcher. `Enter`
+makes a Space whose pane runs the row's `command` — an attach, a tunnel, an
+ssh — so everything about reaching that machine (auth, an SDK, a short-lived
+token) stays in your command and never enters this plugin.
+
+Each row is:
+
+| field | meaning |
+| --- | --- |
+| `id` | stable identifier, used to dedup and to give Jump something to rank against — keep it the same across runs for the same machine |
+| `label` | the primary text (required) |
+| `detail` | the dimmed secondary line |
+| `command` | the argv a pick runs (required) — a bare list, quoted for you |
+
+Sources are **opt-in and invisible when unused**: no `[[sources]]` means no
+change and no added latency. They're fetched **off the critical path** — local
+rows draw first, each source's rows land as it answers, and a source run
+concurrently with the others under its own `timeout_ms`. A slow or broken
+source degrades to "those rows are missing, and here's why" (a `⚠` line under
+the list) rather than a hung popup.
+
+`herdr-phin-util sources` runs every source and prints its rows and problems
+without opening anything — the way to check a source the same way `projects`
+checks a roots setting.
+
 ---
 
 ## Promote a pane to its own Space
@@ -595,6 +640,7 @@ herdr-phin-util popup                 # the older paste-a-link popup
 herdr-phin-util projects              # what discovery found
 herdr-phin-util worktrees             # what the branch level would offer
 herdr-phin-util setups [--repo DIR]   # what setups are defined, and from where
+herdr-phin-util sources               # run the [[sources]] and print their rows
 herdr-phin-util version
 
 herdr-phin-util open <link-or-text> [--agent|--no-agent] [--prompt TEXT]
@@ -673,6 +719,13 @@ plain        = "{{.Text}}"
 [linear]
 # Accepted but unused today -- a Linear issue resolves from its URL alone.
 # api_key = "lin_api_..."
+
+# [[sources]]
+# Opt-in external row sources: a command that prints extra picker rows (a
+# remote machine, a devbox, a pod) as JSON lines. See "External row sources".
+# name       = "anyscale"
+# command    = ["herdr-anyscale-remote", "picker-rows"]
+# timeout_ms = 3000   # default 3000, capped at 60000
 ```
 
 A bad *value* — an unknown agent kind, a nonsense depth — falls back to its
