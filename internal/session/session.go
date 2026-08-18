@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/phin-tech/herdr-phin-util/internal/config"
 	"github.com/phin-tech/herdr-phin-util/internal/discovery"
@@ -57,6 +58,18 @@ type Candidate struct {
 	// produced the row owns it wholesale; this plugin only carries it through
 	// to the pane. Nil on every other kind.
 	Command []string
+	// Children is the argv a KindExternal row runs to list what is inside it
+	// when tab descends -- a machine's repos, a repo's branches. Nil for a leaf
+	// row. A row with Children and no Command is a pure branch node: tab and
+	// Enter both descend, since there is nothing to open.
+	Children []string
+	// ChildrenLabel names what descending finds, for the footer ("repos",
+	// "branches"). Empty falls back to a generic word.
+	ChildrenLabel string
+	// ChildrenTimeout is how long the Children fetch is given. It is inherited
+	// from the source that produced this row, so every level under a source
+	// keeps that source's timeout without a config entry of its own.
+	ChildrenTimeout time.Duration
 	// Label is the primary text: a Space's own label, or a checkout's
 	// directory name.
 	Label string

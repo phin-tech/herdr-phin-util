@@ -28,6 +28,12 @@ const (
 	// the row you were already on, which is why it is reached with its own key
 	// rather than by descending.
 	levelSetups
+	// levelExternal is a level produced by an external source's children
+	// command -- a machine's repos, a repo's branches. Unlike the others it is
+	// not one fixed depth: a child row can carry its own children, so these
+	// levels stack arbitrarily deep, tracked by externalStack rather than by a
+	// single saved level.
+	levelExternal
 )
 
 // Picker is the project picker popup: type to narrow, Enter to go.
@@ -93,8 +99,18 @@ type Picker struct {
 	externalIDs map[string]bool
 	// sourceProblems are the reasons some external rows are missing -- a source
 	// that timed out, failed, or printed a malformed line -- shown rather than
-	// swallowed. Kept in arrival order.
+	// swallowed. Kept in arrival order. They belong to the level currently on
+	// screen: a descent saves and clears them, and a pop restores them.
 	sourceProblems []string
+	// externalStack is the trail of parent levels a descent into external
+	// children pushed, one frame per level down. Empty except while inside an
+	// external row's children. shift+tab / esc pops one; the filter and
+	// selection come back with it.
+	externalStack []externalFrame
+	// externalLabel names what the current external level is a list of, taken
+	// from the children_label of the row that was descended into ("repos",
+	// "branches"). Empty at every non-external level.
+	externalLabel string
 
 	all      []session.Candidate
 	filtered []session.Candidate
@@ -226,6 +242,11 @@ func (p *Picker) filterPlaceholder(l level) string {
 		return "filter branches, or type a new branch name"
 	case levelSetups:
 		return "filter setups"
+	case levelExternal:
+		if p.externalLabel != "" {
+			return "filter " + p.externalLabel
+		}
+		return "filter"
 	default:
 		if holding {
 			return "which repository does " + p.ticket.Issue + " belong to?"
@@ -353,6 +374,114 @@ func (p *Picker) descend(c session.Candidate) tea.Cmd {
 	}
 }
 
+// externalFrame is one parent level an external descent pushed: everything
+// that has to come back when the descent is popped, plus the crumb naming the
+// row that was descended into so the breadcrumb can be rebuilt from the stack
+// alone.
+type externalFrame struct {
+	level          level
+	all            []session.Candidate
+	label          string
+	filter         string
+	cursor, offset int
+	linkMode       bool
+	problems       []string
+	crumb          string
+}
+
+// hasChildren reports whether a row can be descended into -- an external row
+// whose source gave it a children command. It is the external analogue of
+// canDescend, kept separate because the two answer for different kinds and
+// lead to different descents.
+func hasChildren(c session.Candidate) bool {
+	return c.Kind == session.KindExternal && len(c.Children) > 0
+}
+
+type externalDescendMsg struct {
+	crumb      string
+	label      string
+	candidates []session.Candidate
+	problems   []string
+}
+
+// descendExternal runs a row's children command off the UI loop and, when it
+// answers, pushes a level. It is the external sibling of descend: same "one
+// blocking step, then a new level" shape, bounded by the timeout the row
+// inherited from its source so a slow children command degrades to a reported
+// line rather than a hung popup, exactly as a slow top-level source does.
+func (p *Picker) descendExternal(c session.Candidate) tea.Cmd {
+	if p.runSource == nil || !hasChildren(c) {
+		return nil
+	}
+
+	p.running = true
+	p.err = nil
+	p.status = "reading " + c.Label + "..."
+
+	run := p.runSource
+	name := c.Label
+	command := c.Children
+	label := c.ChildrenLabel
+	timeout := c.ChildrenTimeout
+	return func() tea.Msg {
+		candidates, problems := session.ExternalChildren(run, name, command, timeout)
+		return externalDescendMsg{crumb: name, label: label, candidates: candidates, problems: problems}
+	}
+}
+
+// pushExternal switches to a freshly listed external level, saving the level
+// it came from so a pop restores it. It runs on the descend message rather
+// than in descendExternal so the save captures the parent exactly as it was
+// when the child rows arrived, not as it was when the key was pressed.
+func (p *Picker) pushExternal(msg externalDescendMsg) {
+	p.externalStack = append(p.externalStack, externalFrame{
+		level:    p.level,
+		all:      p.all,
+		label:    p.externalLabel,
+		filter:   p.filter.Value(),
+		cursor:   p.cursor,
+		offset:   p.offset,
+		linkMode: p.linkMode,
+		problems: p.sourceProblems,
+		crumb:    msg.crumb,
+	})
+	p.level = levelExternal
+	p.all = msg.candidates
+	p.externalLabel = msg.label
+	p.sourceProblems = msg.problems
+	p.linkMode = false
+	p.filter.Placeholder = p.filterPlaceholder(levelExternal)
+	p.filter.SetValue("")
+	p.applyFilter()
+}
+
+// popExternal returns one external level, restoring the parent's filter,
+// selection and problem lines. It is the descent's shift+tab / esc, and keeps
+// the same contract ascend and leaveSetups do: a level you can back out of
+// losing nothing is one you will try.
+func (p *Picker) popExternal() {
+	n := len(p.externalStack)
+	if n == 0 {
+		return
+	}
+	f := p.externalStack[n-1]
+	p.externalStack = p.externalStack[:n-1]
+
+	p.level = f.level
+	p.all = f.all
+	p.externalLabel = f.label
+	p.sourceProblems = f.problems
+	p.filter.Placeholder = p.filterPlaceholder(f.level)
+	p.err = nil
+	p.status = ""
+	p.filter.SetValue(f.filter)
+	p.applyFilter()
+	p.linkMode = f.linkMode
+	p.cursor = f.cursor
+	p.offset = f.offset
+	p.clampCursor()
+}
+
 // ascend returns to the project level, restoring the filter and selection the
 // descent interrupted.
 func (p *Picker) ascend() {
@@ -461,9 +590,17 @@ func (p *Picker) addExternalRows(msg externalRowsMsg) {
 	// project level now or descends back to it later.
 	p.projectAll = append(p.projectAll, fresh...)
 
+	// If a top-level source answered after the user had already descended into
+	// an external row, the project level is not on screen but is saved at the
+	// bottom of the stack -- give its frame the new rows too, so popping all
+	// the way back shows them rather than a list frozen at descent time.
+	if len(p.externalStack) > 0 && p.externalStack[0].level == levelProjects {
+		p.externalStack[0].all = append(p.externalStack[0].all, fresh...)
+	}
+
 	// The list actually on screen only needs rebuilding when the project level
-	// is what is on screen. In a repository or the setup list, the new rows are
-	// waiting in projectAll for the trip back up.
+	// is what is on screen. In a repository, the setup list, or an external
+	// level, the new rows are waiting in projectAll for the trip back up.
 	if p.level != levelProjects {
 		return
 	}
@@ -540,6 +677,12 @@ func (p *Picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case externalRowsMsg:
 		p.addExternalRows(msg)
+		return p, nil
+
+	case externalDescendMsg:
+		p.running = false
+		p.status = ""
+		p.pushExternal(msg)
 		return p, nil
 
 	case descendMsg:
@@ -679,6 +822,10 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.leaveSetups()
 			return p, nil
 		}
+		if p.level == levelExternal {
+			p.popExternal()
+			return p, nil
+		}
 		if p.level == levelWorktrees && p.rootLevel != levelWorktrees {
 			p.ascend()
 			return p, nil
@@ -713,6 +860,13 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if c, ok := p.selected(); ok && p.takeTicket(c) {
 			return p, nil
 		}
+		// An external row whose source gave it children is descended into the
+		// same way a repository is: run the children command, push a level.
+		// This works at the project level and at any external level, since a
+		// child row can carry its own children.
+		if c, ok := p.selected(); ok && hasChildren(c) {
+			return p, p.descendExternal(c)
+		}
 		// Only the project level has a repository underneath it. A Space row
 		// one level down is a worktree that is already open, and re-listing
 		// the repository it belongs to would be going sideways, not deeper.
@@ -725,6 +879,10 @@ func (p *Picker) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		if p.level == levelSetups {
 			p.leaveSetups()
+			return p, nil
+		}
+		if p.level == levelExternal {
+			p.popExternal()
 			return p, nil
 		}
 		if p.level == levelWorktrees && p.rootLevel != levelWorktrees {
@@ -1103,6 +1261,14 @@ func (p *Picker) submit() tea.Cmd {
 	// because there is only one thing picking a repository could mean.
 	if p.ticket.Kind != "" && p.level == levelProjects && canDescend(candidate) {
 		return p.descend(candidate)
+	}
+
+	// A pure branch node -- children and no command -- has nothing to open, so
+	// Enter descends into it the way tab would. A row that has both is opened
+	// by Enter and descended by tab; only the command-less case falls through
+	// to here.
+	if hasChildren(candidate) && len(candidate.Command) == 0 {
+		return p.descendExternal(candidate)
 	}
 
 	agent := p.agentOn

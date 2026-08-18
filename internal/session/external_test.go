@@ -48,3 +48,47 @@ func TestExternalCandidatesMapRows(t *testing.T) {
 		t.Errorf("problems = %v, want the one reported", problems)
 	}
 }
+
+func TestExternalCandidatesStampChildren(t *testing.T) {
+	run := func(spec source.Spec) source.Result {
+		return source.Result{Name: spec.Name, Rows: []source.Row{
+			{ID: "m1", Label: "machine", Command: []string{"attach"}, Children: []string{"list", "--repos"}, ChildrenLabel: "repos"},
+			{ID: "leaf", Label: "flat", Command: []string{"go"}},
+		}}
+	}
+	cands, _ := ExternalCandidates(run, config.SourceSettings{Name: "anyscale", Command: []string{"x"}, TimeoutMs: 4000})
+
+	if len(cands) != 2 {
+		t.Fatalf("want 2 candidates, got %d", len(cands))
+	}
+	withKids := cands[0]
+	if len(withKids.Children) != 2 || withKids.ChildrenLabel != "repos" {
+		t.Errorf("children not carried: %+v", withKids)
+	}
+	// A row with children inherits the source's timeout, so the level below is
+	// bounded the same way without a config entry.
+	if withKids.ChildrenTimeout != 4*time.Second {
+		t.Errorf("ChildrenTimeout = %v, want the source's 4s", withKids.ChildrenTimeout)
+	}
+	// A leaf keeps none of it.
+	if cands[1].Children != nil || cands[1].ChildrenTimeout != 0 {
+		t.Errorf("leaf row should carry no children state: %+v", cands[1])
+	}
+}
+
+func TestExternalChildrenInheritTimeoutAndName(t *testing.T) {
+	var gotSpec source.Spec
+	run := func(spec source.Spec) source.Result {
+		gotSpec = spec
+		return source.Result{Name: spec.Name, Rows: []source.Row{{ID: "r1", Label: "sous-chef", Command: []string{"branches"}}}}
+	}
+
+	cands, _ := ExternalChildren(run, "sam-post-vpn-fix", []string{"list", "--repos-on", "sam-post-vpn-fix"}, 3*time.Second)
+
+	if gotSpec.Name != "sam-post-vpn-fix" || gotSpec.Timeout != 3*time.Second {
+		t.Errorf("children spec built wrong: %+v", gotSpec)
+	}
+	if len(cands) != 1 || cands[0].Label != "sous-chef" || cands[0].Kind != KindExternal {
+		t.Errorf("children not mapped: %+v", cands)
+	}
+}

@@ -37,7 +37,8 @@ type Spec struct {
 
 // Row is one picker row as a source prints it: a stable id for dedup and so
 // Jump's ranking has something to learn against, the two lines of text the
-// picker shows, and the argv a pick runs to put you there.
+// picker shows, the argv a pick runs to put you there, and -- optionally --
+// the argv that lists what is *inside* this row when tab descends into it.
 //
 // The JSON tags are the wire format a source writes -- one object per line on
 // stdout -- so this struct is the contract those commands are written against.
@@ -46,6 +47,16 @@ type Row struct {
 	Label   string   `json:"label"`
 	Detail  string   `json:"detail"`
 	Command []string `json:"command"`
+	// Children, when set, is the command that lists this row's own rows -- a
+	// remote machine's repos, a repo's branches -- printed in the same
+	// JSON-lines format, recursively. tab descends into it the way it descends
+	// into a repository's worktrees. A row that has Children and no Command is
+	// a pure branch node: there is nothing to open, only somewhere to go.
+	Children []string `json:"children"`
+	// ChildrenLabel names what descending finds ("repos", "branches"), for the
+	// footer that already says what tab would do. Empty is fine; the footer
+	// falls back to a generic word.
+	ChildrenLabel string `json:"children_label"`
 }
 
 // Result is what one source produced: its rows, and the problems worth
@@ -165,16 +176,18 @@ func parseRows(name string, out []byte) ([]Row, []string) {
 }
 
 // validateRow rejects a row that could not be acted on: one with nothing to
-// show, or nothing to run when picked. An id is not required here -- a row
-// without one still opens -- but a row without a label would be a blank line
-// in the list, and one without a command would be an Enter that did nothing,
-// so both are dropped with a reason.
+// show, or nothing to do at all. An id is not required here -- a row without
+// one still opens -- but a row without a label would be a blank line in the
+// list, and a row that is neither openable (a command) nor descendable
+// (children) is an Enter and a tab that both do nothing, so those are dropped
+// with a reason. A row with children and no command is legitimate: it is a
+// pure branch node you descend into rather than open.
 func validateRow(name string, line int, row Row) string {
 	if strings.TrimSpace(row.Label) == "" {
 		return fmt.Sprintf("source %q line %d has no label", name, line)
 	}
-	if len(row.Command) == 0 {
-		return fmt.Sprintf("source %q line %d (%s) has no command to run", name, line, row.Label)
+	if len(row.Command) == 0 && len(row.Children) == 0 {
+		return fmt.Sprintf("source %q line %d (%s) has neither a command to run nor children to descend into", name, line, row.Label)
 	}
 	return ""
 }

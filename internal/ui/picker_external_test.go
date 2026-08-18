@@ -43,6 +43,152 @@ func externalRow(id, label string) source.Row {
 	return source.Row{ID: id, Label: label, Detail: "RUNNING · anyscale", Command: []string{"connect", "--name", label}}
 }
 
+// press sends one key and drains the command it returned, defined alongside
+// run in picker_worktree_test.go.
+
+var (
+	keyTab      = tea.KeyMsg{Type: tea.KeyTab}
+	keyShiftTab = tea.KeyMsg{Type: tea.KeyShiftTab}
+	keyEsc      = tea.KeyMsg{Type: tea.KeyEsc}
+	keyEnter    = tea.KeyMsg{Type: tea.KeyEnter}
+	keyDown     = tea.KeyMsg{Type: tea.KeyDown}
+)
+
+// nestedRunner answers each level of a machine → repos → branches tree by the
+// name descendExternal fetches with (the label of the row descended into).
+func nestedRunner() source.Runner {
+	return fakeRunner(map[string]source.Result{
+		"anyscale": {Rows: []source.Row{{
+			ID: "m1", Label: "machine", Detail: "RUNNING", Command: []string{"connect"},
+			Children: []string{"list", "--repos"}, ChildrenLabel: "repos",
+		}}},
+		"machine": {Rows: []source.Row{{
+			ID: "r1", Label: "sous-chef", Detail: "/mnt/repos/sous-chef",
+			Children: []string{"list", "--branches"}, ChildrenLabel: "branches",
+		}}},
+		"sous-chef": {Rows: []source.Row{
+			{ID: "b1", Label: "main", Command: []string{"worktree", "main"}},
+			{ID: "b2", Label: "feature", Command: []string{"worktree", "feature"}},
+		}},
+	})
+}
+
+func TestTabDescendsIntoExternalChildren(t *testing.T) {
+	p := externalPicker(t, nestedRunner(), []config.SourceSettings{{Name: "anyscale", Command: []string{"x"}}})
+	p.width, p.height = 80, 24
+	drainSources(p)
+
+	if got := labels(p.filtered); strings.Join(got, ",") != "machine" {
+		t.Fatalf("top level: got %v, want machine", got)
+	}
+
+	press(p, keyTab) // descend into the machine's repos
+	if p.level != levelExternal {
+		t.Fatalf("after tab: level = %v, want levelExternal", p.level)
+	}
+	if got := labels(p.filtered); strings.Join(got, ",") != "sous-chef" {
+		t.Fatalf("repos level: got %v, want sous-chef", got)
+	}
+	if !strings.Contains(p.View(), "machine") {
+		t.Errorf("breadcrumb should name the descended machine, view:\n%s", p.View())
+	}
+
+	press(p, keyTab) // descend again into the repo's branches
+	if got := labels(p.filtered); strings.Join(got, ",") != "main,feature" {
+		t.Fatalf("branches level: got %v, want main,feature", got)
+	}
+	// Two levels deep: the breadcrumb carries both crumbs.
+	view := p.View()
+	if !strings.Contains(view, "machine") || !strings.Contains(view, "sous-chef") {
+		t.Errorf("breadcrumb should show the whole trail, view:\n%s", view)
+	}
+}
+
+func TestPopExternalRestoresParent(t *testing.T) {
+	p := externalPicker(t, nestedRunner(), []config.SourceSettings{{Name: "anyscale", Command: []string{"x"}}})
+	p.width, p.height = 80, 24
+	drainSources(p)
+
+	press(p, keyTab)  // into repos
+	press(p, keyTab)  // into branches
+	press(p, keyDown) // select "feature"
+	if sel, _ := p.selected(); sel.Label != "feature" {
+		t.Fatalf("precondition: selected %q, want feature", sel.Label)
+	}
+
+	press(p, keyEsc) // back to repos
+	if p.level != levelExternal || strings.Join(labels(p.filtered), ",") != "sous-chef" {
+		t.Fatalf("after one pop: level=%v rows=%v, want repos", p.level, labels(p.filtered))
+	}
+
+	press(p, keyShiftTab) // back to the top
+	if p.level != levelProjects || strings.Join(labels(p.filtered), ",") != "machine" {
+		t.Fatalf("after full pop: level=%v rows=%v, want the top", p.level, labels(p.filtered))
+	}
+}
+
+// A pure branch node -- children, no command -- descends on Enter, since there
+// is nothing to open.
+func TestEnterDescendsCommandlessNode(t *testing.T) {
+	p := externalPicker(t, nestedRunner(), []config.SourceSettings{{Name: "anyscale", Command: []string{"x"}}})
+	p.width, p.height = 80, 24
+	drainSources(p)
+
+	press(p, keyTab) // now on "sous-chef", which has children and no command
+	if sel, _ := p.selected(); len(sel.Command) != 0 || !hasChildren(sel) {
+		t.Fatalf("precondition: sous-chef should be a command-less node: %+v", sel)
+	}
+
+	press(p, keyEnter)
+	if p.level != levelExternal || strings.Join(labels(p.filtered), ",") != "main,feature" {
+		t.Errorf("Enter on a branch node should descend, got level=%v rows=%v", p.level, labels(p.filtered))
+	}
+	// Descending is not opening: the picker is still running, nothing was picked.
+	if _, _, _, done := p.Result(); done {
+		t.Error("Enter on a branch node should not finish the picker")
+	}
+}
+
+// A leaf row -- a command and no children -- offers no descent, so tab does
+// nothing rather than opening anything.
+func TestTabOnLeafExternalRowDoesNothing(t *testing.T) {
+	p := externalPicker(t, nestedRunner(), []config.SourceSettings{{Name: "anyscale", Command: []string{"x"}}})
+	p.width, p.height = 80, 24
+	drainSources(p)
+	press(p, keyTab) // repos
+	press(p, keyTab) // branches -- "main" is a leaf
+
+	before := p.level
+	press(p, keyTab)
+	if p.level != before {
+		t.Errorf("tab on a leaf should not change level, went %v -> %v", before, p.level)
+	}
+}
+
+func TestFailingChildrenShowsWarning(t *testing.T) {
+	run := fakeRunner(map[string]source.Result{
+		"anyscale": {Rows: []source.Row{{ID: "m1", Label: "machine", Command: []string{"connect"}, Children: []string{"list"}, ChildrenLabel: "repos"}}},
+		"machine":  {Problems: []string{`source "machine" timed out after 3s`}},
+	})
+	p := externalPicker(t, run, []config.SourceSettings{{Name: "anyscale", Command: []string{"x"}}})
+	p.width, p.height = 80, 24
+	drainSources(p)
+
+	press(p, keyTab)
+	if p.level != levelExternal {
+		t.Fatalf("a failing descent should still push the level so the reason is visible, level=%v", p.level)
+	}
+	if !strings.Contains(p.View(), "timed out") {
+		t.Errorf("the descent's failure should show as a ⚠ line, view:\n%s", p.View())
+	}
+
+	// Popping back clears that level's problem, restoring the parent's (none).
+	press(p, keyEsc)
+	if len(p.sourceProblems) != 0 {
+		t.Errorf("parent level should have no problems after pop, got %v", p.sourceProblems)
+	}
+}
+
 func TestExternalRowsLandBesideLocalRows(t *testing.T) {
 	run := fakeRunner(map[string]source.Result{
 		"anyscale": {Rows: []source.Row{externalRow("a1", "jim-dev2"), externalRow("a2", "neil")}},

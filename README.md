@@ -255,7 +255,43 @@ Each row is:
 | `id` | stable identifier, used to dedup and to give Jump something to rank against — keep it the same across runs for the same machine |
 | `label` | the primary text (required) |
 | `detail` | the dimmed secondary line |
-| `command` | the argv a pick runs (required) — a bare list, quoted for you |
+| `command` | the argv a pick runs — required unless `children` is set |
+| `children` | argv that lists what's *inside* this row, same JSON-lines format (see below) |
+| `children_label` | what `tab` descends into, for the footer — "repos", "branches" |
+
+#### Descending into a row
+
+A remote machine isn't a leaf — it has repos, and those have branches, the same
+shape a local checkout has. Give a row a `children` command and `tab` descends
+into it the way it descends into a repository's worktrees:
+
+```json
+{"id":"anyscale:expwrk_56em","label":"sam-post-vpn-fix","detail":"RUNNING · anyscale",
+ "command":["herdr-anyscale-remote","connect","--name","sam-post-vpn-fix"],
+ "children":["herdr-anyscale-remote","picker-rows","--repos-on","sam-post-vpn-fix"],
+ "children_label":"repos"}
+```
+
+```
+Open a project › sam-post-vpn-fix              ← tab on the workspace
+  remote sous-chef           /mnt/user_storage/repos/sous-chef
+Open a project › sam-post-vpn-fix › sous-chef  ← tab again
+  remote main
+  remote PRO-3477-centralized-memory-spike
+```
+
+- `tab` / `ctrl+w` runs the `children` command and pushes a level; `shift+tab` /
+  `esc` pops back, filter and selection intact.
+- The rows it returns may themselves carry `children`, so **depth is your
+  source's business** — the picker just keeps descending.
+- `enter` runs a row's `command` if it has one; a row with `children` and **no**
+  `command` is a pure branch node, and `enter` descends into it too.
+- Each level is fetched under the same `timeout_ms`, and a slow or broken
+  children command degrades to the same `⚠` line — per level.
+
+Creating the worktree on the remote, cloning if needed, and everything else
+behind that last `command` stays yours; the picker only asks your source
+"what's inside this row?"
 
 Sources are **opt-in and invisible when unused**: no `[[sources]]` means no
 change and no added latency. They're fetched **off the critical path** — local

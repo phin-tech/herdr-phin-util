@@ -57,7 +57,7 @@ printf '%s\n' '{"id":"a4","label":"ok2","command":["go2"]}'
 		t.Fatalf("want 3 problems, got %d: %v", len(res.Problems), res.Problems)
 	}
 	joined := strings.Join(res.Problems, "\n")
-	for _, want := range []string{"not valid JSON", "has no label", "has no command"} {
+	for _, want := range []string{"not valid JSON", "has no label", "neither a command"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("problems missing %q: %v", want, res.Problems)
 		}
@@ -111,5 +111,42 @@ func TestRunNoCommandIsAProblemNotAPanic(t *testing.T) {
 	res := Run(Spec{Name: "empty"})
 	if len(res.Rows) != 0 || len(res.Problems) != 1 {
 		t.Fatalf("want one problem and no rows, got rows=%+v problems=%v", res.Rows, res.Problems)
+	}
+}
+
+func TestRunParsesChildren(t *testing.T) {
+	res := Run(sh(`
+printf '%s\n' '{"id":"m1","label":"machine","command":["attach"],"children":["list","--repos"],"children_label":"repos"}'
+`))
+	if len(res.Problems) != 0 {
+		t.Fatalf("unexpected problems: %v", res.Problems)
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(res.Rows))
+	}
+	r := res.Rows[0]
+	if strings.Join(r.Children, " ") != "list --repos" || r.ChildrenLabel != "repos" {
+		t.Errorf("children not parsed: %+v", r)
+	}
+}
+
+// A row with children and no command is a pure branch node -- legitimate,
+// because tab descends into it even though there is nothing to open.
+func TestRunAcceptsAChildrenOnlyNode(t *testing.T) {
+	res := Run(sh(`printf '%s\n' '{"id":"n1","label":"node","children":["deeper"]}'`))
+	if len(res.Problems) != 0 || len(res.Rows) != 1 {
+		t.Fatalf("a children-only node should be kept: rows=%+v problems=%v", res.Rows, res.Problems)
+	}
+}
+
+// A row with neither a command nor children can be neither opened nor
+// descended, so it is dropped with a reason.
+func TestRunRejectsARowWithNothingToDo(t *testing.T) {
+	res := Run(sh(`printf '%s\n' '{"id":"x1","label":"inert"}'`))
+	if len(res.Rows) != 0 {
+		t.Fatalf("a do-nothing row should be dropped, got %+v", res.Rows)
+	}
+	if len(res.Problems) != 1 || !strings.Contains(res.Problems[0], "neither a command") {
+		t.Errorf("want a 'nothing to do' problem, got %v", res.Problems)
 	}
 }

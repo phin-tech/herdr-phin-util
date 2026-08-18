@@ -6,6 +6,27 @@ so the two always name the same thing.
 
 Dates are the day the version was cut.
 
+## 0.10.4 — 2026-08-18
+
+External picker rows can have children now (#23): `tab` descends into a remote
+machine the same way it descends into a repository.
+
+- A source row gained two optional fields: `children` (a command that lists
+  what's inside the row, in the same JSON-lines format, recursively) and
+  `children_label` (what the footer calls them — "repos", "branches"). `tab` /
+  `ctrl+w` runs the children command and pushes a level; `shift+tab` / `esc`
+  pops back with the filter and selection intact. Rows returned may carry their
+  own `children`, so depth is the source's business.
+- `enter` runs a row's `command` if it has one; a row with `children` and no
+  `command` is a pure branch node that `enter` descends into. A row with
+  neither is now reported as malformed rather than silently dropped.
+- Each level is fetched under the timeout the row inherited from its source,
+  and a slow or broken children command degrades to the same `⚠` line, per
+  level — saved and restored as you descend and pop.
+- `herdr-phin-util sources` marks a descendable row with `→ <children_label>`.
+- Absent `children` is exactly the previous behaviour, so a flat source is
+  unaffected.
+
 ## 0.10.3 — 2026-08-18
 
 Optional external row sources for the project picker (#22): reach a remote

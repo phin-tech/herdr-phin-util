@@ -604,7 +604,13 @@ func runSources() int {
 		})
 		fmt.Printf("%s (%s)\n", res.Name, orNone(strings.Join(src.Command, " ")))
 		for _, row := range res.Rows {
-			fmt.Printf("  %-24s %-28s %s\n", orNone(row.ID), row.Label, row.Detail)
+			// A row with children is a level, not a leaf; naming its
+			// children_label says tab would descend here rather than open.
+			descend := ""
+			if len(row.Children) > 0 {
+				descend = "  → " + orNone(row.ChildrenLabel)
+			}
+			fmt.Printf("  %-24s %-28s %s%s\n", orNone(row.ID), row.Label, row.Detail, descend)
 		}
 		if len(res.Rows) == 0 && len(res.Problems) == 0 {
 			fmt.Println("  (no rows)")

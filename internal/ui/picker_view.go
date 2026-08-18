@@ -81,10 +81,12 @@ func (p *Picker) pickerView() string {
 // sourceProblemLines renders the reasons some external rows are missing, one
 // per source problem, dimmed so they sit under the picker as a footnote rather
 // than as an error the whole popup is about. Nothing is shown when every
-// source answered cleanly, which is the norm -- and the setup and worktree
-// levels never show them, since sources belong to the project level.
+// source answered cleanly, which is the norm. They belong to the levels that
+// come from a source -- the project level and any external children level --
+// and are saved and restored per level, so a failure descending shows here
+// and a pop puts the parent level's own problems back.
 func (p *Picker) sourceProblemLines() []string {
-	if len(p.sourceProblems) == 0 || p.level != levelProjects {
+	if len(p.sourceProblems) == 0 || (p.level != levelProjects && p.level != levelExternal) {
 		return nil
 	}
 	out := make([]string, len(p.sourceProblems))
@@ -140,6 +142,17 @@ func (p *Picker) viewTitle() string {
 			dimStyle.Render(" › ") +
 			titleStyle.Render(p.repo.Name)
 	}
+	if p.level == levelExternal {
+		// The trail is rebuilt from the stack alone: each frame carries the
+		// crumb of the row descended into to reach the level above it, so the
+		// breadcrumb reads "Open a project › machine › repo" one segment per
+		// level deep.
+		out := titleStyle.Render("Open a project")
+		for _, f := range p.externalStack {
+			out += dimStyle.Render(" › ") + titleStyle.Render(f.crumb)
+		}
+		return out
+	}
 	return p.viewRoot()
 }
 
@@ -169,6 +182,11 @@ func (p *Picker) countSummary() string {
 		// Only the default row: nothing applies here, which is a different
 		// thing from nothing being defined at all.
 		return "no setups apply to this row"
+	}
+	if p.level == levelExternal && len(p.all) == 0 {
+		// A children command that returned nothing is a real, different answer
+		// from a misconfigured [projects].roots -- an empty machine, say.
+		return "nothing here"
 	}
 	if len(p.all) == 0 {
 		return "nothing found — check [projects].roots in your config"
@@ -394,7 +412,22 @@ func (p *Picker) enterLabel() string {
 	if p.ticket.Kind != "" && p.level == levelProjects {
 		return " choose repo  "
 	}
+	// A pure branch node opens nothing -- Enter descends into it -- so the hint
+	// names that rather than promising an "open" that would not happen.
+	if c, ok := p.selected(); ok && hasChildren(c) && len(c.Command) == 0 {
+		return " " + childrenNoun(c) + "  "
+	}
 	return " open  "
+}
+
+// childrenNoun is what a descendable row's children are called, for the footer
+// -- the source's own children_label where it gave one, a generic word where
+// it did not.
+func childrenNoun(c session.Candidate) string {
+	if c.ChildrenLabel != "" {
+		return c.ChildrenLabel
+	}
+	return "inside"
 }
 
 // tabHint names what tab would do on the highlighted row, and reports false
@@ -407,6 +440,11 @@ func (p *Picker) tabHint() (string, bool) {
 	}
 	if isTicketRow(c) {
 		return " choose repo  ", true
+	}
+	// An external row with children descends the same way a repository does,
+	// named by whatever the source called them.
+	if hasChildren(c) {
+		return " " + childrenNoun(c) + "  ", true
 	}
 	if p.level == levelProjects && canDescend(c) {
 		if c.Kind == session.KindClone {
@@ -448,6 +486,15 @@ func (p *Picker) viewPickerHint() string {
 	// key: worktrees under a repository, setups under everything else.
 	if label, ok := p.tabHint(); ok {
 		hint += keyStyle.Render("tab") + dimStyle.Render(label)
+	}
+
+	if p.level == levelExternal {
+		// Every external level has a level underneath it -- that is how you got
+		// here -- so shift+tab and esc both mean "back one", the same as the
+		// worktree level reached by descending.
+		return hint +
+			keyStyle.Render("shift+tab") + dimStyle.Render(" back  ") +
+			keyStyle.Render("esc") + dimStyle.Render(" back")
 	}
 
 	if p.level == levelWorktrees {
