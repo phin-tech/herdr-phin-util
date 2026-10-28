@@ -10,6 +10,24 @@ repo="phin-tech/herdr-phin-util"
 
 mkdir -p bin
 
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$(uname -m)" in
+arm64 | aarch64) arch="arm64" ;;
+x86_64 | amd64) arch="amd64" ;;
+*) arch="$(uname -m)" ;;
+esac
+name="herdr-phin-util-${os}-${arch}"
+
+# A copy downloaded from the apps page carries a binary for each platform in
+# dist/, built from the same commit as the manifest. Use it before reaching for
+# a toolchain or the network.
+if [ -f "dist/${name}" ]; then
+	cp "dist/${name}" "$out"
+	chmod +x "$out"
+	echo "installed bundled ${name}" >&2
+	exit 0
+fi
+
 if command -v go >/dev/null 2>&1; then
 	# Stamp the manifest's version, so a source build reports the same thing
 	# `herdr plugin list` does rather than "dev".
@@ -22,7 +40,6 @@ fi
 
 echo "go not found on PATH; downloading a prebuilt binary instead" >&2
 
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$os" in
 darwin | linux) ;;
 *)
@@ -40,7 +57,6 @@ x86_64 | amd64) arch="amd64" ;;
 	;;
 esac
 
-name="herdr-phin-util-${os}-${arch}"
 # The rolling build is a prerelease, and /releases/latest/ skips those, so the
 # tag is named explicitly.
 base="https://github.com/${repo}/releases/download/latest"

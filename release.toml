@@ -1,0 +1,13 @@
+# Read by app-release (https://git.phin.tech/sam/app-release): `app-release ship patch` bumps the version in
+# herdr-plugin.toml, builds the plugin for each platform and puts it on https://apps.phin.tech.
+kind = "herdr-plugin"
+app = "Herdr Phin Util"
+slug = "herdr-phin-util"
+description = "Herdr plugin: open a project, branch, PR or pre-laid-out room in one keystroke."
+
+[herdr]
+binary = "herdr-phin-util"
+main = "./cmd/herdr-phin-util"
+version_var = "github.com/phin-tech/herdr-phin-util/internal/version.Version"
+
+[downloads]
