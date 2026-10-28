@@ -11,3 +11,4 @@ main = "./cmd/herdr-phin-util"
 version_var = "github.com/phin-tech/herdr-phin-util/internal/version.Version"
 
 [downloads]
+source = "https://github.com/phin-tech/herdr-phin-util"
