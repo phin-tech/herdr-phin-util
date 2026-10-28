@@ -18,6 +18,12 @@ herdr plugin link /path/to/herdr-phin-util   # or a local checkout
 Builds from source if Go is present, otherwise fetches the CI binary and
 verifies its checksum.
 
+There's also a zip on [apps.phin.tech](https://apps.phin.tech) under *Herdr
+plugins*. It carries the source and a binary for macOS and Linux (arm64 and
+amd64), so it needs neither Go nor the network: unzip it and run
+`herdr plugin link <the unzipped folder>`. `build.sh` picks the binary for the
+machine out of `dist/`.
+
 Needs `git`, and `gh` **authenticated** (`gh auth login`) — PR and issue
 lookups and cloning all go through it.
 
@@ -883,3 +889,20 @@ Herdr API gotchas that shaped the code:
 - The handoff directory comes from inside the transcript, not the folder Claude
   files it under — that name turns both `/` and `.` into `-`, so `foo.bar` and
   `foo/bar` are indistinguishable once written.
+
+### Releasing
+
+`app-release ship patch|minor|major` (from [sam/app-release](https://git.phin.tech/sam/app-release),
+which reads this repo's `release.toml`) bumps `version` in `herdr-plugin.toml`,
+commits and pushes it, builds the binary for each platform, zips the tracked
+files with those binaries in `dist/`, puts the zip on apps.phin.tech and tags
+`v<version>`. The tag also triggers `.github/workflows/release.yml`, whose
+manifest sync then finds nothing to change. It needs `go` and `cf`
+(`cf auth login`) on the machine and a clean, pushed `main`. `--dry-run` shows
+all of it without uploading anything.
+
+There's no `scripts/release` here yet, so run it from an app-release checkout:
+
+```sh
+RELEASE_ROOT=~/src/github.com/phin-tech/herdr-phin-util app-release ship patch --dry-run
+```
